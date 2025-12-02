@@ -106,7 +106,7 @@ def metadata_dict_equals(dict1: Dict, dict2: Dict) -> bool:
             return False
     return True
 
-def get_scaling_equation(scaling_method: str, log_a=None, min_q=None, max_q=None, custom_formula=None) -> str:
+def get_scaling_equation(scaling_method: str,min_q=None, max_q=None, custom_formula=None, phred_alphabet_max=41) -> str:
     """
     Returns the mathematical equation string for each scaling method
     """
@@ -114,34 +114,26 @@ def get_scaling_equation(scaling_method: str, log_a=None, min_q=None, max_q=None
         return custom_formula
     elif scaling_method == 'none':
         return "x"
-    elif scaling_method == 'piecewise':
-        return "{(10/16)*(x-34)+1, x<50; x-50+11, 50<=x<70; (33/23)*(x-70)+31, x>=70}"
     elif scaling_method == 'log':
-        return "1+62*(ln(x-39)/ln(54))"
-    elif scaling_method == 'log_reverse':
-        return "64-(1+62*(ln(94-x)/ln(54)))"
-    elif scaling_method == 'log_custom':
-        a_val = log_a if log_a is not None else 0
-        return f"64-(63*(ln({a_val}+x-133)-ln({a_val}-40))/(ln({a_val}-93)-ln({a_val}-40)))"
+        return f"1+62*(ln(x-1)/ln({phred_alphabet_max-1}))"
     elif scaling_method == 'log_adaptive':
         min_val = min_q if min_q is not None else 40
         max_val = max_q if max_q is not None else 93
-        return f"1+62*(ln(x-{min_val-1})/ln({max_val}-{min_val-1}))"
+        return f"1+62*(ln(x-{min_val-1})/ln({max_val-min_val-1}))"
     elif scaling_method == 'linear':
         return "1+62*(x-40)/53"
-    elif scaling_method == 'adaptive':
-        return "1+62*(x-min(x))/(max(x)-min(x))"
     else:
         return "x"
 
 
-def create_phred_quality_map(phred_offset=33): # Standard 33 offset
+def create_phred_quality_map(phred_offset=0, phred_alphabet_max=41): 
+    # Offset is more of a custom thing for the user? It's not really in use, as the offset is applied during fastq gen itself
     phred_map = np.zeros(128, dtype=np.uint8)
     
     for ascii_val in range(128):
         quality_score = ascii_val - phred_offset
-        # Clip to range [40, 93]
-        quality_score = max(40, min(quality_score, 93))
+        # Clip to range [0, (phred_alphabet_max - 1)]
+        quality_score = max(40, min(quality_score, (phred_alphabet_max-1)))
         phred_map[ascii_val] = quality_score
     
     return phred_map
@@ -193,8 +185,9 @@ def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray
 
 
 # Application of quality to bases
-def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method='none', log_a=None, 
-                           dataset_min_q=None, dataset_max_q=None, custom_formula=None):
+def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method='none', 
+                           dataset_min_q=None, dataset_max_q=None, custom_formula=None, 
+                           phred_alphabet_max=41):
     # Straight up one-hot encoding
     if scaling_method == 'none':
         return base_values
@@ -210,46 +203,14 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
         # Parse and evaluate custom formula
         scale_factors = parse_custom_formula(custom_formula, quality_scores)
 
-    elif scaling_method == 'piecewise':
-        # Np masks used for optim purposes 
-        scale_factors = np.zeros_like(quality_scores, dtype=np.float32)
-        mask1 = quality_scores < 50
-        mask2 = (quality_scores >= 50) & (quality_scores < 70)
-        mask3 = quality_scores >= 70
-        scale_factors[mask1] = (10/16) * (quality_scores[mask1] - 34) + 1
-        scale_factors[mask2] = (quality_scores[mask2] - 50) + 11
-        scale_factors[mask3] = (33/23) * (quality_scores[mask3] - 70) + 31
-
-    elif scaling_method == 'log_reverse':
-        # This makes larger quality scores more different from each other, and smaller quality scores closer in difference. 
-        # f(x) = 1 + 62 * (log(94-x) / log(54)), function works nicely given min quality is 40 
-        # Normal np implementation is: scale_factors = 1 + 62 * (np.log(94 - quality_scores) / np.log(54))
-        # Do this to shut up divison by zero errors or other invaliv vals that get clipped anyways
-        with np.errstate(divide='ignore', invalid='ignore'): 
-            LOG_REVERSE_DICT = 64 - (np.clip(1 + 62 * (np.log(94 - np.arange(0, 94, dtype=np.float32)) / np.log(54)), 1, 63).astype(np.uint8))
-            scale_factors = LOG_REVERSE_DICT[quality_scores]
-
     elif scaling_method == 'log':
         # This makes larger quality scores closer in difference, and smaller quality scores more different from eachother. 
-        # f(x) = 1 + 62 * (log(x-39) / log(54)), function works nicely given min quality is 40 
+        # f(x) = 1 + 62 * (log(x-1) / log((phred_alphabet_max-1))), function works nicely by using a log10 curve (which the normal q score formula uses anyways)
         # Normal np implementation is: scale_factors = 1 + 62 * (np.log(quality_scores - 39) / np.log(54))
-        # Do this to shut up divison by zero errors or other invaliv vals that get clipped anyways
+        # Do this to shut up divison by zero errors or other invalid vals that get clipped anyways
         with np.errstate(divide='ignore', invalid='ignore'): 
-            LOG_DICT = np.clip(1 + 62 * (np.log(np.arange(0, 94, dtype=np.float32) - 39) / np.log(54)),1, 63).astype(np.uint8)
+            LOG_DICT = np.clip(1 + 62 * (np.log(np.arange(0, 94, dtype=np.float32) - 1) / np.log((phred_alphabet_max-1))),1, 63).astype(np.uint8)
             scale_factors = LOG_DICT[quality_scores]
-
-    elif scaling_method == 'log_custom':
-        # An issue with log scaling is that it can be somewhat harsh to values on both ends of a domain 
-        # To counteract this, a custom log function has been implemented, preserving the points of (40, 0) and (93, 63)
-        # The "a" value in question determines how harsh the curve is. A higher "a" value -> straighter line (less steep curve/more linear)
-        if log_a is None: 
-            print("Please specify an A value when using a custom log scale")
-            return base_values
-        with np.errstate(divide='ignore', invalid='ignore'): 
-            x = np.arange(0, 94, dtype=np.float32)
-            LOG_CUST_DICT = (63 - (63 * (np.log(log_a + x - 133) - np.log(log_a - 40)) / (np.log(log_a - 93) - np.log(log_a - 40)))) + 1
-            LOG_CUST_DICT = np.clip(LOG_CUST_DICT, 0, 63).astype(np.uint8)
-            scale_factors = LOG_CUST_DICT[quality_scores]
 
     elif scaling_method == 'log_adaptive':
         # Use dataset-wide min/max passed in
@@ -306,7 +267,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           quality_scaling='none', binary=True, log_a=None, compress_headers=False, 
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False, 
                           binary_bases=False, binary_quality=False, custom_formula=None, multiple_flowcells=False,
-                          remove_repeating_header=False):
+                          remove_repeating_header=False, phred_alphabet_max=41):
     with open(fastq_path, 'rb') as fastq_file:
         content = fastq_file.read()
     
@@ -471,7 +432,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         if not keep_bases and not binary_bases:
             # Apply scaling on flat arrays 
             flat_mapped = apply_quality_to_bases(flat_mapped, flat_quals, base_map, quality_scaling, 
-                                                log_a, dataset_min_q, dataset_max_q, custom_formula)
+                                                 dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
         
         # Split back into individual sequences
         split_indices = np.cumsum(seq_lengths)[:-1]
@@ -508,10 +469,10 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     bin_file.write(f"@{metadata_line}\n".encode('utf-8'))
                     
                     # Write parameter line with equation
-                    equation = get_scaling_equation(quality_scaling, log_a, dataset_min_q, dataset_max_q, custom_formula)
+                    equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
                     parameter_line = f"#{equation}\n"
                     bin_file.write(parameter_line.encode('utf-8'))
-                    
+                                        
                     # Write range line for multiple flowcells 
                     range_line = f"@RANGE:{start_idx}-{end_idx}\n"
                     bin_file.write(range_line.encode('utf-8'))
@@ -522,13 +483,14 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     bin_file.write(f"@{metadata_line}\n".encode('utf-8'))
                 
                 # Write parameter line with equation
-                equation = get_scaling_equation(quality_scaling, log_a, dataset_min_q, dataset_max_q, custom_formula)
+                equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
                 parameter_line = f"#{equation}\n"
                 bin_file.write(parameter_line.encode('utf-8'))
         
         # Write all sequences
         for idx in range(len(all_headers)):
             bin_file.write(all_headers[idx])
+            bin_file.write(b'<') # Add start marker for sequence (bc sequences may be written out on multiple lines)
             if binary:
                 bin_file.write(all_mapped[idx].tobytes())
             else:
@@ -580,13 +542,12 @@ def main():
     # Quality arguments
     argument_parser.add_argument("--extract_quality", type=int, default=1, 
                                 help="For FASTQ: extract quality scores (0/1, default 1)")
-    argument_parser.add_argument("--phred_offset", type=int, default=33,
-                                help="Phred quality offset (default 33)")
+    argument_parser.add_argument("--phred_offset", type=int, default=0,
+                                help="Phred quality offset (if needed)(default 0)")
     argument_parser.add_argument("--min_quality", type=int, default=0,
                                 help="Minimum quality score threshold (default 0)")
     argument_parser.add_argument("--quality_scaling", type=str, 
-                                choices=['none', 'piecewise', 'log','log_custom', 'log_reverse', 
-                                        'linear', 'adaptive', 'log_adaptive', 'custom'], 
+                                choices=['log','log_custom','log_adaptive', 'custom'], 
                                 default='none',
                                 help="Quality scaling method (default: none)")
     argument_parser.add_argument("--custom_formula", type=str, default=None,
@@ -608,6 +569,8 @@ def main():
     
     argument_parser.add_argument("--remove_repeating_header", type=int, default=0,
                             help="Remove repeating metadata from individual sequence headers, store only at top (0/1, default 0)")
+    argument_parser.add_argument("--phred_alphabet", type=str, default='phred42', # Added to prepare for future implementation of sequencing machine parameter
+                            help="What phred quality (q-score) ascii character alphabet is used by the inputted fastq")
 
     # Base mapping
     argument_parser.add_argument("--gray_N", type=int, default=1, help="Grayscale value for N (default 1)")
@@ -629,6 +592,7 @@ def main():
                             "4: Repeating header removal entirely, base conversion kept, written out in one line")
 
     user_arguments = argument_parser.parse_args()
+    alphabet_max = None
 
     if user_arguments.keep_bases == 1 and user_arguments.binary_bases == 1:
         print("ERROR: Cannot use both --keep_bases and --binary_bases. Choose one:")
@@ -671,6 +635,14 @@ def main():
         user_arguments.remove_repeating_header = 1
         user_arguments.binary_write = 1
 
+    if user_arguments.phred_alphabet == "phred42":
+        phred_alphabet_max = 41
+    elif user_arguments.phred_alphabet == "phred63":
+        phred_alphabet_max = 62
+    elif user_arguments.phred_alphabet == "phred94":
+        phred_alphabet_max = 93
+    
+
     # Create base map
     numpy_base_map = np.zeros(128, dtype=np.uint8) 
     numpy_base_map[ord("N")] = user_arguments.gray_N
@@ -689,7 +661,7 @@ def main():
         print("Profiling enabled...")
 
     # Create phred map if needed
-    phred_map = create_phred_quality_map(user_arguments.phred_offset) if user_arguments.extract_quality else None
+    phred_map = create_phred_quality_map(user_arguments.phred_offset, phred_alphabet_max) if user_arguments.extract_quality else None
 
     print(f"Converting sequences from {user_arguments.input_path}...")
     export_scalars_to_txt(user_arguments.input_path, numpy_base_map, 
@@ -702,7 +674,8 @@ def main():
                           binary_bases=user_arguments.binary_bases, binary_quality=user_arguments.binary_quality,
                           custom_formula=user_arguments.custom_formula,
                           multiple_flowcells=(user_arguments.multiple_flowcells == 1),
-                          remove_repeating_header=(user_arguments.remove_repeating_header == 1))
+                          remove_repeating_header=(user_arguments.remove_repeating_header == 1),
+                          phred_alphabet_max=phred_alphabet_max)
     
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
