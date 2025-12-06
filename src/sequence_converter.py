@@ -7,6 +7,23 @@ import pstats
 import re
 from typing import Dict, Tuple, List
 
+def detect_pair_number(header: str) -> int:
+    """
+    Detect if a read is pair 1 or pair 2 from its header (for paired-end compatability).
+    Common patterns in paired-end fastq files are: /1, /2, or _1, _2
+    """
+    # Check for /1 or /2 pattern
+    if '/1' in header:
+        return 1
+    elif '/2' in header:
+        return 2
+    elif '_1' in header:
+        return 1
+    elif '_2' in header:
+        return 2
+    
+    return 0
+
 # Following functions extract IDs from respective machine headers AND common metadata: 
 def parse_illumina_header(header: str) -> Tuple[Dict, str]:
     pattern = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
@@ -267,7 +284,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           quality_scaling='none', binary=True, log_a=None, compress_headers=False, 
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False, 
                           binary_bases=False, binary_quality=False, custom_formula=None, multiple_flowcells=False,
-                          remove_repeating_header=False, phred_alphabet_max=41):
+                          remove_repeating_header=False, phred_alphabet_max=41, paired_end=False, 
+                          paired_end_mode='same_file'):
     with open(fastq_path, 'rb') as fastq_file:
         content = fastq_file.read()
     
@@ -279,6 +297,9 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             print("Multiple flowcell detection enabled")
         if remove_repeating_header:
             print("Repeating header metadata removal enabled - only unique IDs will be stored")
+    
+    if paired_end:
+        print(f"Paired-end mode enabled (output mode: {paired_end_mode})")
     
     # Premake lookup table
     BYTE_LOOKUP = np.array([f'{i:03d}'.encode('ascii') for i in range(256)])
@@ -304,6 +325,12 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             if header_end == -1:
                 break
             header_str = content[i:header_end].decode('utf-8', errors='ignore')
+            
+            # Detect pair number if paired-end is enabled
+            pair_number = 0
+            if paired_end:
+                pair_number = detect_pair_number(header_str)
+            
             # Compress header if enabled and extract metadata from first header
             if compress_headers and sequencer_type != 'none':
                 common, unique_id = compress_header(header_str, sequencer_type)
@@ -331,7 +358,11 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 if remove_repeating_header:
                     header = b''  # No header at all in mode 4
                 else:
-                    header = f"@{sequence_count}:{unique_id}\n".encode('utf-8')
+                    # Append pair number to header for modes 1 and 3
+                    if paired_end and pair_number > 0:
+                        header = f"@{sequence_count}:{unique_id}/{pair_number}\n".encode('utf-8')
+                    else:
+                        header = f"@{sequence_count}:{unique_id}\n".encode('utf-8')
             else:
                 header = content[i:header_end+1]
             
@@ -524,6 +555,21 @@ def main():
     argument_parser = argparse.ArgumentParser(description="Convert and compress FASTQ/FASTA files to scalar format")
     argument_parser.add_argument("input_path", type=str, help="Path of .fasta or .fastq file")
     argument_parser.add_argument("output_path", type=str, help="Output file path")
+
+    # Quick mode implementation
+    argument_parser.add_argument("mode", type=int,
+                            help="What mode to use when writing out converted values." \
+                            "1: Header compression only" \
+                            "2: Base conversion into numbers only" \
+                            "3: Header and base conversion, written out in two lines" \
+                            "4: Repeating header removal entirely, base conversion kept, written out in one line")
+    # Paired-end args
+    argument_parser.add_argument("--paired_end", type=int, default=0,
+                                help="Signifies if the input file contains paired-end reads (0/1, default 0)")
+    argument_parser.add_argument("--paired_end_mode", type=str, 
+                                 choices=['same_file', 'separate_files'],
+                                 default='same_file',
+                                 help="Output mode for paired-end reads: same_file or separate_files (default: same_file)")
     
     # SRA accession
     argument_parser.add_argument("--sra_accession", type=str, default=None,
@@ -583,13 +629,7 @@ def main():
     argument_parser.add_argument("--profile", type=int, default=0,
                                 help="Enable profiling (0/1, default 0)")
     
-    # Quick mode implementation
-    argument_parser.add_argument("--mode", type=int, default=3,
-                            help="What mode to use when writing out converted values." \
-                            "1: Header compression only" \
-                            "2: Base conversion into numbers only" \
-                            "3: Header and base conversion, written out in two lines" \
-                            "4: Repeating header removal entirely, base conversion kept, written out in one line")
+    
 
     user_arguments = argument_parser.parse_args()
     alphabet_max = None
@@ -675,7 +715,9 @@ def main():
                           custom_formula=user_arguments.custom_formula,
                           multiple_flowcells=(user_arguments.multiple_flowcells == 1),
                           remove_repeating_header=(user_arguments.remove_repeating_header == 1),
-                          phred_alphabet_max=phred_alphabet_max)
+                          phred_alphabet_max=phred_alphabet_max,
+                          paired_end=(user_arguments.paired_end == 1),
+                          paired_end_mode=user_arguments.paired_end_mode)
     
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
