@@ -132,7 +132,7 @@ def metadata_dict_equals(dict1: Dict, dict2: Dict) -> bool:
             return False
     return True
 
-def get_scaling_equation(scaling_method: str,min_q=None, max_q=None, custom_formula=None, phred_alphabet_max=41) -> str:
+def get_scaling_equation(scaling_method: str, custom_formula=None, phred_alphabet_max=41) -> str:
     """
     Returns the mathematical equation string for each scaling method
     """
@@ -142,10 +142,6 @@ def get_scaling_equation(scaling_method: str,min_q=None, max_q=None, custom_form
         return "x"
     elif scaling_method == 'log':
         return f"1+62*(ln(x-1)/ln({phred_alphabet_max-1}))"
-    elif scaling_method == 'log_adaptive':
-        min_val = min_q if min_q is not None else 40
-        max_val = max_q if max_q is not None else 93
-        return f"1+62*(ln(x-{min_val-1})/ln({max_val-min_val-1}))"
     elif scaling_method == 'linear':
         return "1+62*(x-40)/53"
     else:
@@ -209,11 +205,9 @@ def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray
         print("  'x ** 2 / 100'")
         raise
 
-
 # Application of quality to bases
 def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method='none', 
-                           dataset_min_q=None, dataset_max_q=None, custom_formula=None, 
-                           phred_alphabet_max=41):
+                           custom_formula=None, phred_alphabet_max=41):
     # Straight up one-hot encoding
     if scaling_method == 'none':
         return base_values
@@ -238,28 +232,6 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
             LOG_DICT = np.clip(1 + 62 * (np.log(np.arange(0, 94, dtype=np.float32) - 1) / np.log((phred_alphabet_max-1))),1, 63).astype(np.uint8)
             scale_factors = LOG_DICT[quality_scores]
 
-    elif scaling_method == 'log_adaptive':
-        # Use dataset-wide min/max passed in
-        if dataset_min_q is None or dataset_max_q is None:
-            print("ERROR: log_adaptive requires dataset min/max quality scores")
-            return base_values
-            
-        min_q = dataset_min_q
-        max_q = dataset_max_q
-    
-        # Avoid divide by zero if all values are the same
-        if max_q == min_q:
-            scale_factors = np.full_like(quality_scores, 32, dtype=np.uint8)
-        else:
-            x = np.arange(min_q, max_q + 1, dtype=np.float32)  # Only our relevant range
-            # Tunable log curve mapping (min_q, 1) and (max_q, 63)
-            LOG_ADP_DICT = 1 + 62 * (np.log(x - (min_q - 1)) / np.log(max_q - (min_q - 1)))
-            LOG_ADP_DICT = np.clip(LOG_ADP_DICT, 1, 63).astype(np.uint8)
-
-            scale_table = np.zeros(94, dtype=np.uint8)
-            scale_table[min_q:max_q+1] = LOG_ADP_DICT
-            scale_factors = scale_table[quality_scores]
- 
     elif scaling_method == 'linear':
         # Linear scaling
         scale_factors = 1 + 62 * (quality_scores - 40) / 53
@@ -409,8 +381,7 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     return records, b'', current_flowcell_metadata, sequence_count
 
 def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
-                               quality_scaling: str, dataset_min_q: Optional[int], 
-                               dataset_max_q: Optional[int], custom_formula: Optional[str],
+                               quality_scaling: str, custom_formula: Optional[str],
                                phred_alphabet_max: int, min_quality: int, keep_bases: bool,
                                binary_bases: bool, binary: bool, keep_quality: bool,
                                remove_repeating_header: bool, BYTE_LOOKUP: np.ndarray):
@@ -431,7 +402,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         if not keep_bases and not binary_bases:
             # Apply scaling on flattened arrays 
             flat_mapped = apply_quality_to_bases(flat_mapped, flat_quals, base_map, quality_scaling, 
-                                                 dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
+                                                 custom_formula, phred_alphabet_max)
     
     if min_quality > 0 and len(all_quals) > 0:
         flat_quals = np.concatenate(all_quals).astype(np.uint8)
@@ -574,6 +545,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     current_flowcell_metadata = metadata
             
             # Process and write records immediately
+            # Process and write records immediately
             if records:
                 process_and_write_records(
                     records, outfile, base_map, quality_scaling,
@@ -618,10 +590,10 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     outfile.write(f"@{metadata_line}\n".encode('utf-8'))
                     
                     # Write parameter line with equation
-                    equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
+                    equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                     parameter_line = f"#{equation}\n"
                     outfile.write(parameter_line.encode('utf-8'))
-                    
+                                        
                     # Write range line for multiple flowcells 
                     range_line = f"@RANGE:{start_idx}-{end_idx}\n"
                     outfile.write(range_line.encode('utf-8'))
@@ -632,7 +604,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     outfile.write(f"@{metadata_line}\n".encode('utf-8'))
                 
                 # Write parameter line with equation
-                equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
+                equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                 parameter_line = f"#{equation}\n"
                 outfile.write(parameter_line.encode('utf-8'))
             
@@ -685,9 +657,9 @@ def main():
     argument_parser.add_argument("--min_quality", type=int, default=0,
                                 help="Minimum quality score threshold (default 0)")
     argument_parser.add_argument("--quality_scaling", type=str, 
-                                choices=['log','log_custom','log_adaptive', 'custom'], 
-                                default='none',
-                                help="Quality scaling method (default: none)")
+                                 choices=['log','log_custom', 'custom'], 
+                                 default='none',
+                                 help="Quality scaling method (default: none)")
     argument_parser.add_argument("--custom_formula", type=str, default=None,
                                 help="Custom formula for quality scaling (use 'x' for quality score). "
                                      "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
