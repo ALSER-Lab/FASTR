@@ -5,7 +5,16 @@ import argparse
 import cProfile
 import pstats
 import re
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
+from dataclasses import dataclass
+
+@dataclass
+class FASTQRecord:
+    index: int
+    header: bytes
+    sequence: np.ndarray
+    quality: np.ndarray
+    pair_number: int = 0
 
 def detect_pair_number(header: str) -> int:
     """
@@ -278,6 +287,126 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
     result = base_min_lookup[base_values] + scale_factors - 1
     
     return result.astype(np.uint8)
+
+
+def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray, 
+                                    phred_map: Optional[np.ndarray], compress_headers: bool, 
+                                    sequencer_type: str, paired_end: bool, keep_bases: bool, 
+                                    binary_bases: bool, keep_quality: bool, binary_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], int]:
+    """
+    This method parses FASTQ records from a buffer and returns complete records/leftover incomplete data.
+    """
+    records = []
+    current_flowcell_metadata = None
+    sequence_count = 0
+    i = 0
+    
+    while i < len(buffer):
+        if buffer[i:i+1] == b'@':
+            header_end = buffer.find(b'\n', i)
+            if header_end == -1:
+                # This means we have an incomplete record, so we'll just return what we have so far
+                return records, buffer[i:], current_flowcell_metadata, sequence_count
+            
+            header_str = buffer[i:header_end].decode('utf-8', errors='ignore')
+            
+            # Detect pair num if paired-end arg is enabled
+            pair_number = 0
+            if paired_end:
+                pair_number = detect_pair_number(header_str)
+            
+            # Compress header if enabled and extract metadata from first header
+            header = None
+            if compress_headers and sequencer_type != 'none':
+                common, unique_id = compress_header(header_str, sequencer_type)
+                if common:
+                    current_flowcell_metadata = common
+                
+                # Append pair number to header for modes 1/3
+                if paired_end and pair_number > 0:
+                    header = f"@{start_index + sequence_count}:{unique_id}/{pair_number}\n".encode('utf-8')
+                else:
+                    header = f"@{start_index + sequence_count}:{unique_id}\n".encode('utf-8')
+            else:
+                header = buffer[i:header_end+1]
+            # find base sequence
+            seq_end = buffer.find(b'\n', header_end + 1)
+            if seq_end == -1:
+                return records, buffer[i:], current_flowcell_metadata, sequence_count
+            
+            seq_data = buffer[header_end+1:seq_end].replace(b'\r', b'')
+            
+            # find '+' line
+            plus_end = buffer.find(b'\n', seq_end + 1)
+            if plus_end == -1:
+                return records, buffer[i:], current_flowcell_metadata, sequence_count
+            
+            # find quality line(s)
+            qual_end = buffer.find(b'\n', plus_end + 1)
+            if qual_end == -1:
+                # check if we might have a complete record at end of buffer
+                potential_qual_length = len(seq_data)
+                if plus_end + 1 + potential_qual_length < len(buffer):
+                    qual_end = plus_end + 1 + potential_qual_length
+                else:
+                    return records, buffer[i:], current_flowcell_metadata, sequence_count
+            
+            qual_data = buffer[plus_end+1:qual_end].replace(b'\r', b'')
+            
+            # conditional to check for corrupted data length (mismatch between base num and quality size)
+            if len(seq_data) != len(qual_data):
+                print(f"Skipping corrupted record {start_index + sequence_count} due to length mismatch: {len(seq_data)} bases vs {len(qual_data)} quality scores.")
+                i = qual_end if qual_end < len(buffer) else len(buffer)
+                continue # skip current record
+            
+            # Process quality WITHOUT min/max calculation
+            qual_vals = None
+            qual_string = None
+            
+            if phred_map is not None:
+                qual_ascii = np.frombuffer(qual_data, dtype=np.uint8)
+                qual_vals = phred_map[qual_ascii]
+                
+                # Store original quality string if keep_quality is enabled
+                if keep_quality:
+                    if binary_quality:
+                        # Store the same numeric values we just calculated
+                        qual_string = qual_vals.copy()  # Use .copy() to avoid reference issues
+                    else:
+                        qual_string = qual_data
+            
+            # Process sequence
+            ascii_vals = np.frombuffer(seq_data, dtype=np.uint8)
+            
+            if keep_bases:
+                mapped_vals = ascii_vals  # Keep original ASCII values 
+            elif binary_bases:
+                binary_map = np.zeros(128, dtype=np.uint8)
+                binary_map[ord('A')] = 0
+                binary_map[ord('T')] = 1
+                binary_map[ord('C')] = 2
+                binary_map[ord('G')] = 3
+                binary_map[ord('N')] = 4
+                mapped_vals = binary_map[ascii_vals]
+            else:
+                mapped_vals = base_map[ascii_vals]  # Convert to 255 range
+            
+            # store new fastq record
+            record = FASTQRecord(
+                index=start_index + sequence_count,
+                header=header,
+                sequence=mapped_vals,
+                quality=qual_vals if qual_vals is not None else np.array([], dtype=np.uint8),
+                pair_number=pair_number
+            )
+            records.append(record)
+            sequence_count += 1
+            
+            i = qual_end
+        else:
+            i += 1
+    
+    return records, b'', current_flowcell_metadata, sequence_count
 
 
 def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min_quality=0, 
