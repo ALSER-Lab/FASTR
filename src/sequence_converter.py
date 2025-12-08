@@ -408,6 +408,74 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     
     return records, b'', current_flowcell_metadata, sequence_count
 
+def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
+                               quality_scaling: str, dataset_min_q: Optional[int], 
+                               dataset_max_q: Optional[int], custom_formula: Optional[str],
+                               phred_alphabet_max: int, min_quality: int, keep_bases: bool,
+                               binary_bases: bool, binary: bool, keep_quality: bool,
+                               remove_repeating_header: bool, BYTE_LOOKUP: np.ndarray):
+    """
+    This function processes quality scaling on records and then immediately writes to file.
+    """
+    if not records:
+        return
+    
+    seq_lengths = [len(r.sequence) for r in records] # Store sequence lengths before concat
+    flat_mapped = np.concatenate([r.sequence for r in records]).astype(np.uint8)
+    
+    all_quals = [r.quality for r in records if len(r.quality) > 0]
+    
+    if len(all_quals) > 0 and quality_scaling != 'none':
+        flat_quals = np.concatenate(all_quals).astype(np.uint8)
+        
+        if not keep_bases and not binary_bases:
+            # Apply scaling on flattened arrays 
+            flat_mapped = apply_quality_to_bases(flat_mapped, flat_quals, base_map, quality_scaling, 
+                                                 dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
+    
+    if min_quality > 0 and len(all_quals) > 0:
+        flat_quals = np.concatenate(all_quals).astype(np.uint8)
+        low_quality_mask = flat_quals < min_quality
+        
+        if keep_bases:
+            flat_mapped[low_quality_mask] = ord('N')  # Keep as ASCII
+        elif binary_bases:
+            flat_mapped[low_quality_mask] = 4  # N = 4 in binary encoding
+        else:
+            flat_mapped[low_quality_mask] = base_map[ord('N')]  # Convert to numeric
+
+    split_indices = np.cumsum(seq_lengths)[:-1] # Split back into individual sequences
+    processed_seqs = list(np.split(flat_mapped, split_indices))
+    
+    # Write all sequences
+    for idx, record in enumerate(records):
+        # Store only unique ID if remove_repeating_header is enabled
+        if not remove_repeating_header:
+            outfile.write(record.header)
+        
+        outfile.write(b'<')  # Add start marker for sequence (because sequences may be written out on multiple lines, sort of like FASTA's >'' signifier)
+        if binary:
+            outfile.write(processed_seqs[idx].tobytes())
+        else:
+            if keep_bases:
+                outfile.write(processed_seqs[idx].tobytes())  # Write ASCII directly
+            elif binary_bases:
+                outfile.write(b''.join(BYTE_LOOKUP[processed_seqs[idx]])) # Write binary bases as text numbers for inspection
+            else:
+                outfile.write(b''.join(BYTE_LOOKUP[processed_seqs[idx]]))  # Convert numbers to text
+        
+        outfile.write(b'\n')
+        
+        # Write quality scores if keep_quality is enabled
+        if keep_quality and len(record.quality) > 0:
+            outfile.write(b'+\n')
+            if binary_quality:
+                outfile.write(record.quality.tobytes()) # Write as binary bytes (numeric quality values)
+            else:
+                # Write as ASCII text (original quality string)
+                outfile.write(record.quality)
+            outfile.write(b'\n')
+
 
 def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min_quality=0, 
                           quality_scaling='none', binary=True, log_a=None, compress_headers=False, 
