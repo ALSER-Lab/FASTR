@@ -476,17 +476,19 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
                 outfile.write(record.quality)
             outfile.write(b'\n')
 
-
 def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min_quality=0, 
                           quality_scaling='none', binary=True, log_a=None, compress_headers=False, 
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False, 
                           binary_bases=False, binary_quality=False, custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False, 
-                          paired_end_mode='same_file'):
-    with open(fastq_path, 'rb') as fastq_file:
-        content = fastq_file.read()
+                          paired_end_mode='same_file', chunk_size_mb=100):
+    """
+    This function uses a streaming architecture to handle files of any size w/ constant mem usage.
+    This is where we write the binary vals, and this function acts as a "main" for our base scaling, parsing etc. 
+    """
     
-    print(f"Read {len(content):,} bytes from file")
+    file_size = os.path.getsize(fastq_path)
+    print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
     
     if compress_headers and sequencer_type != 'none':
         print(f"Header compression enabled (sequencer type: {sequencer_type})")
@@ -498,255 +500,148 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     if paired_end:
         print(f"Paired-end mode enabled (output mode: {paired_end_mode})")
     
+    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+    print(f"Processing with {chunk_size_mb}MB chunks (streaming mode)")
+
     # Premake lookup table
     BYTE_LOOKUP = np.array([f'{i:03d}'.encode('ascii') for i in range(256)])
-    
-    # Collect all data
-    all_headers = []
-    all_mapped = []
-    all_quals = []
-    all_qual_strings = []  # Store original quality strings
     
     # For multiple flowcells tracking
     flowcell_metadata_list = []  # List including things like common_metadata, start_index, end_index
     current_flowcell_metadata = None
     flowcell_start_index = 0
-    
-    i = 0
-    sequence_count = 0
+    total_sequences = 0
+    buffer = b''
     
     print("Collecting sequences...")
-    while i < len(content):
-        if content[i:i+1] == b'@':
-            header_end = content.find(b'\n', i)
-            if header_end == -1:
-                break
-            header_str = content[i:header_end].decode('utf-8', errors='ignore')
-            
-            # Detect pair number if paired-end is enabled
-            pair_number = 0
-            if paired_end:
-                pair_number = detect_pair_number(header_str)
-            
-            # Compress header if enabled and extract metadata from first header
-            if compress_headers and sequencer_type != 'none':
-                common, unique_id = compress_header(header_str, sequencer_type)
-                
-                # Track flowcell changes if multiple_flowcells is enabled
-                if multiple_flowcells and common:
-                    if current_flowcell_metadata is None:
-                        # First flowcell
-                        current_flowcell_metadata = common
-                        flowcell_start_index = sequence_count
-                    elif not metadata_dict_equals(current_flowcell_metadata, common):
-                        # Flowcell changed! Save the previous flowcell range
-                        flowcell_metadata_list.append((current_flowcell_metadata.copy(), flowcell_start_index, sequence_count - 1))
-                        current_flowcell_metadata = common
-                        flowcell_start_index = sequence_count
-                        print(f"Flowcell change detected at sequence {sequence_count}")
-                elif multiple_flowcells and not common and current_flowcell_metadata is not None:
-                    # Empty metadata but we had valid metadata before? So we'll skip this sequence/handle as error
-                    print(f"WARNING: Failed to parse header at sequence {sequence_count}, skipping flowcell check")
-                elif current_flowcell_metadata is None:
-                    # Single flowcell mode (original behavior)
-                    current_flowcell_metadata = common
-                
-                # Store only unique ID if remove_repeating_header is enabled
-                if remove_repeating_header:
-                    header = b''  # No header at all in mode 4
-                else:
-                    # Append pair number to header for modes 1 and 3
-                    if paired_end and pair_number > 0:
-                        header = f"@{sequence_count}:{unique_id}/{pair_number}\n".encode('utf-8')
-                    else:
-                        header = f"@{sequence_count}:{unique_id}\n".encode('utf-8')
-            else:
-                header = content[i:header_end+1]
-            
-            seq_end = content.find(b'\n', header_end + 1)
-            if seq_end == -1:
-                break
-            
-            seq_data = content[header_end+1:seq_end].replace(b'\r', b'')
-            plus_end = content.find(b'\n', seq_end + 1)
-            if plus_end == -1:
-                break
-            
-            qual_end = content.find(b'\n', plus_end + 1)
-            if qual_end == -1:
-                qual_end = len(content)
-            
-            # Process quality WITHOUT min/max calculation
-            if phred_map is not None:
-                qual_data = content[plus_end+1:qual_end].replace(b'\r', b'')
-                qual_ascii = np.frombuffer(qual_data, dtype=np.uint8)
-                qual_vals = phred_map[qual_ascii]
-                all_quals.append(qual_vals)
     
-                # Store original quality string if keep_quality is enabled
-                if keep_quality:
-                    if binary_quality:
-                        # Store the same numeric values we just calculated
-                        all_qual_strings.append(qual_vals.copy())  # Use .copy() to avoid reference issues
-                    else:
-                        all_qual_strings.append(qual_data)
-            
-            # Process sequence
-            ascii_vals = np.frombuffer(seq_data, dtype=np.uint8)
-
-            if keep_bases:
-                mapped_vals = ascii_vals  # Keep original ASCII values 
-            elif binary_bases:
-                binary_map = np.zeros(128, dtype=np.uint8)
-                binary_map[ord('A')] = 0
-                binary_map[ord('T')] = 1
-                binary_map[ord('C')] = 2
-                binary_map[ord('G')] = 3
-                binary_map[ord('N')] = 4
-                mapped_vals = binary_map[ascii_vals]
-            else:
-                mapped_vals = base_map[ascii_vals]  # Convert to 255 range
-
-            all_headers.append(header)
-            all_mapped.append(mapped_vals)
-            sequence_count += 1
-            
-            if sequence_count % 100000 == 0:
-                print(f"Collected {sequence_count:,} sequences...")
-            
-            i = qual_end
-        else:
-            i += 1
-    
-    # Finalize the last flowcell range if multiple flowcells enabled
-    if multiple_flowcells and current_flowcell_metadata is not None:
-        flowcell_metadata_list.append((
-            current_flowcell_metadata.copy(),
-            flowcell_start_index,
-            sequence_count - 1
-        ))
-    
-    # Print flowcell summary
-    if multiple_flowcells and len(flowcell_metadata_list) > 1:
-        print(f"\nDetected {len(flowcell_metadata_list)} flowcells:")
-        for idx, (metadata, start, end) in enumerate(flowcell_metadata_list):
-            fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
-            print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
-    
-    # Calculate min/max in ONE pass after collection (only for log_adaptive)
-    dataset_min_q = None
-    dataset_max_q = None
-    
-    if quality_scaling == 'log_adaptive' and phred_map is not None and len(all_quals) > 0:
-        print("Calculating quality range...")
-        # Concatenate once and find global min/max which is WAYYY faster than per-sequence (~27% faster)
-        flat_quals_temp = np.concatenate(all_quals)
-        dataset_min_q = int(flat_quals_temp.min())
-        dataset_max_q = int(flat_quals_temp.max())
-        print(f"Dataset quality range: [{dataset_min_q}, {dataset_max_q}]")
-        del flat_quals_temp  # Free memory
-    
-    # Now process everything at once
-    print("Processing quality scaling in batch...")
-    
-    # Store sequence lengths before concatenation
-    seq_lengths = [len(arr) for arr in all_mapped]
-    
-    if phred_map is not None and quality_scaling != 'none':
-        # Concatenate all sequences into single flat arrays
-        flat_mapped = np.concatenate(all_mapped).astype(np.uint8)
-        flat_quals = np.concatenate(all_quals).astype(np.uint8)
-
-        if not keep_bases and not binary_bases:
-            # Apply scaling on flat arrays 
-            flat_mapped = apply_quality_to_bases(flat_mapped, flat_quals, base_map, quality_scaling, 
-                                                 dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
+    with open(fastq_path, 'rb', buffering=32*1024*1024) as infile, \
+         open(output_path, 'wb', buffering=32*1024*1024) as outfile:
         
-        # Split back into individual sequences
-        split_indices = np.cumsum(seq_lengths)[:-1]
-        all_mapped = list(np.split(flat_mapped, split_indices))
-    
-    if phred_map is not None and min_quality > 0:
-        flat_quals = np.concatenate(all_quals).astype(np.uint8)
-        low_quality_mask = flat_quals < min_quality
-        
-        flat_mapped = np.concatenate(all_mapped).astype(np.uint8)
-        if keep_bases:
-            flat_mapped[low_quality_mask] = ord('N')  # Keep as ASCII
-        elif binary_bases:
-            flat_mapped[low_quality_mask] = 4  # N = 4 in binary encoding
-        else:
-            flat_mapped[low_quality_mask] = base_map[ord('N')]  # Convert to numeric
-        
-        split_indices = np.cumsum(seq_lengths)[:-1]
-        all_mapped = list(np.split(flat_mapped, split_indices))
-    
-     # Write output
-    print("Writing to file...")
-    with open(output_path, 'wb', buffering=8*1024*1024) as bin_file:
         # Write SRA accession first if provided
         if sra_accession:
-            bin_file.write(f"@{sra_accession}\n".encode('utf-8'))
+            outfile.write(f"@{sra_accession}\n".encode('utf-8'))
         
+        # Reserve space for metadata headers (we'll come back to write these)
+        metadata_position = outfile.tell()
+        
+        # Process file in chunks
+        while True:
+            chunk = infile.read(chunk_size_bytes)
+            if not chunk and not buffer:
+                break
+            
+            buffer += chunk
+            
+            # Find last complete record boundary
+            last_at = buffer.rfind(b'\n@')
+            if last_at == -1 or not chunk:  # Last chunk/no complete record
+                process_buffer = buffer
+                buffer = b''
+            else:
+                process_buffer = buffer[:last_at+1]
+                buffer = buffer[last_at+1:]
+            
+            # Parse records from this buffer
+            records, leftover, metadata, count = parse_fastq_records_from_buffer(
+                process_buffer, total_sequences, base_map, phred_map,
+                compress_headers, sequencer_type, paired_end,
+                keep_bases, binary_bases, keep_quality, binary_quality
+            )
+            
+            # Track flowcell changes if multiple_flowcells is enabled
+            if metadata:
+                if multiple_flowcells:
+                    if current_flowcell_metadata is None:
+                        # First flowcell
+                        current_flowcell_metadata = metadata
+                        flowcell_start_index = total_sequences
+                    elif not metadata_dict_equals(current_flowcell_metadata, metadata):
+                        # Flowcell changed! Save the previous flowcell range
+                        flowcell_metadata_list.append((
+                            current_flowcell_metadata.copy(),
+                            flowcell_start_index,
+                            total_sequences - 1
+                        ))
+                        current_flowcell_metadata = metadata
+                        flowcell_start_index = total_sequences
+                        print(f"Flowcell change detected at sequence {total_sequences}")
+                elif multiple_flowcells and not metadata and current_flowcell_metadata is not None:
+                    # Empty metadata but we had valid metadata before? So we'll skip this sequence/handle as error
+                    print(f"WARNING: Failed to parse header at sequence {total_sequences}, skipping flowcell check")
+                elif current_flowcell_metadata is None:
+                    # Single flowcell mode (original behavior)
+                    current_flowcell_metadata = metadata
+            
+            # Process and write records immediately
+            if records:
+                process_and_write_records(
+                    records, outfile, base_map, quality_scaling,
+                    custom_formula, phred_alphabet_max, min_quality, keep_bases,
+                    binary_bases, binary, keep_quality,
+                    remove_repeating_header, BYTE_LOOKUP
+                )
+            
+            total_sequences += count
+            buffer = leftover + buffer  # Keep leftover for next iteration
+            
+            if total_sequences % 100000 == 0:
+                print(f"Collected {total_sequences:,} sequences...")
+        
+        # Finalize the last flowcell range if multiple flowcells enabled
+        if multiple_flowcells and current_flowcell_metadata is not None:
+            flowcell_metadata_list.append((
+                current_flowcell_metadata.copy(),
+                flowcell_start_index,
+                total_sequences - 1
+            ))
+        elif current_flowcell_metadata:
+            flowcell_metadata_list.append((current_flowcell_metadata, 0, total_sequences - 1))
+        
+        # Print flowcell summary
+        if multiple_flowcells and len(flowcell_metadata_list) > 1:
+            print(f"\nDetected {len(flowcell_metadata_list)} flowcells:")
+            for idx, (metadata, start, end) in enumerate(flowcell_metadata_list):
+                fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
+                print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
+        
+        # Now go back and write metadata headers at the beginning
         # Write metadata header(s) at the top if compression is enabled
         if compress_headers and sequencer_type != 'none':
+            end_position = outfile.tell()
+            outfile.seek(metadata_position)
+            
             if multiple_flowcells and len(flowcell_metadata_list) > 0:
                 # Write all flowcell metadata blocks
                 for metadata, start_idx, end_idx in flowcell_metadata_list:
                     metadata_line = format_metadata_header(metadata, sequencer_type)
-                    bin_file.write(f"@{metadata_line}\n".encode('utf-8'))
+                    outfile.write(f"@{metadata_line}\n".encode('utf-8'))
                     
                     # Write parameter line with equation
                     equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
                     parameter_line = f"#{equation}\n"
-                    bin_file.write(parameter_line.encode('utf-8'))
-                                        
+                    outfile.write(parameter_line.encode('utf-8'))
+                    
                     # Write range line for multiple flowcells 
                     range_line = f"@RANGE:{start_idx}-{end_idx}\n"
-                    bin_file.write(range_line.encode('utf-8'))
+                    outfile.write(range_line.encode('utf-8'))
             else:
                 # Single flowcell (original behavior)
                 if current_flowcell_metadata:
                     metadata_line = format_metadata_header(current_flowcell_metadata, sequencer_type)
-                    bin_file.write(f"@{metadata_line}\n".encode('utf-8'))
+                    outfile.write(f"@{metadata_line}\n".encode('utf-8'))
                 
                 # Write parameter line with equation
                 equation = get_scaling_equation(quality_scaling, dataset_min_q, dataset_max_q, custom_formula, phred_alphabet_max)
                 parameter_line = f"#{equation}\n"
-                bin_file.write(parameter_line.encode('utf-8'))
-        
-        # Write all sequences
-        for idx in range(len(all_headers)):
-            bin_file.write(all_headers[idx])
-            bin_file.write(b'<') # Add start marker for sequence (bc sequences may be written out on multiple lines)
-            if binary:
-                bin_file.write(all_mapped[idx].tobytes())
-            else:
-                if keep_bases:
-                    bin_file.write(all_mapped[idx].tobytes())  # Write ASCII directly
-                elif binary_bases:
-                    # Write binary bases as text numbers for inspection
-                    bin_file.write(b''.join(BYTE_LOOKUP[all_mapped[idx]]))
-                else:
-                    bin_file.write(b''.join(BYTE_LOOKUP[all_mapped[idx]]))  # Convert numbers to text
+                outfile.write(parameter_line.encode('utf-8'))
             
-            bin_file.write(b'\n')
-            
-            # Write quality scores if keep_quality is enabled
-            if keep_quality and idx < len(all_qual_strings):
-                bin_file.write(b'+\n')
-                if binary_quality:
-                    # Write as binary bytes (numeric quality values)
-                    bin_file.write(all_qual_strings[idx].tobytes())
-                else:
-                    # Write as ASCII text (original quality string)
-                    bin_file.write(all_qual_strings[idx])
-                bin_file.write(b'\n')
-            
-            if (idx + 1) % 100000 == 0:
-                print(f"Written {idx + 1:,} sequences...")
+            # Fill remaining space to avoid corrupting data
+            current_pos = outfile.tell()
+            if current_pos < end_position:
+                outfile.write(b'\n' * (end_position - current_pos))
     
-    print(f"Total sequences written: {sequence_count:,}")
+    print(f"Total sequences written: {total_sequences:,}")
 
 def main():
     argument_parser = argparse.ArgumentParser(description="Convert and compress FASTQ/FASTA files to scalar format")
