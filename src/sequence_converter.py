@@ -33,10 +33,13 @@ def detect_pair_number(header: str) -> int:
     
     return 0
 
+
+ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
+PACBIO_PATTERN = re.compile(r'@([^/]+)/(\d+)/(\d+)_(\d+)')
+
 # Following functions extract IDs from respective machine headers AND common metadata: 
 def parse_illumina_header(header: str) -> Tuple[Dict, str]:
-    pattern = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
-    match = pattern.match(header)
+    match = ILLUMINA_PATTERN.match(header)
     if not match:
         return {}, header  # Return as-is if doesn't match
     
@@ -55,8 +58,7 @@ def parse_illumina_header(header: str) -> Tuple[Dict, str]:
     return common, unique_id
 
 def parse_pacbio_header(header: str) -> Tuple[Dict, str]:
-    pattern = re.compile(r'@([^/]+)/(\d+)/(\d+)_(\d+)')
-    match = pattern.match(header)
+    match = PACBIO_PATTERN.match(header)
     if not match:
         return {}, header
     
@@ -265,120 +267,111 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                                     phred_map: Optional[np.ndarray], compress_headers: bool, 
                                     sequencer_type: str, paired_end: bool, keep_bases: bool, 
                                     binary_bases: bool, keep_quality: bool, binary_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], int]:
-    """
-    This method parses FASTQ records from a buffer and returns complete records/leftover incomplete data.
-    """
+    
     records = []
     current_flowcell_metadata = None
-    sequence_count = 0
-    i = 0
+    lines = buffer.split(b'\n') # Split entire buffer ONCE
+    num_complete_records = (len(lines) - 1) // 4 # Calculate amt of complete FASTQ records
     
-    while i < len(buffer):
-        if buffer[i:i+1] == b'@':
-            header_end = buffer.find(b'\n', i)
-            if header_end == -1:
-                # This means we have an incomplete record, so we'll just return what we have so far
-                return records, buffer[i:], current_flowcell_metadata, sequence_count
+    if num_complete_records == 0: # Quick return
+        return records, buffer, current_flowcell_metadata, 0
+    
+    
+    leftover = b'\n'.join(lines[num_complete_records * 4:]) # Get amount before we process
+    
+    # Pre-create binary map ONCE if needed
+    binary_map = None
+    if binary_bases:
+        binary_map = np.zeros(128, dtype=np.uint8)
+        binary_map[ord('A')] = 0
+        binary_map[ord('T')] = 1
+        binary_map[ord('C')] = 2
+        binary_map[ord('G')] = 3
+        binary_map[ord('N')] = 4
+    
+    # Process in smaller batches to avoid numpy split overhead BUT big enough to amortize loop costs
+    BATCH_SIZE = 10000  # Process 10k records at a time (this val honestly doesn't even really matter too much)
+    
+    for batch_start in range(0, num_complete_records, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, num_complete_records)
+        batch_size = batch_end - batch_start
+        
+        line_start = batch_start * 4
+        line_end = batch_end * 4
+        
+        
+        batch_lines = lines[line_start:line_end] # Get batch lines
+        # Vectorized operations on this batch! Ilysm numpy
+        header_strs = [batch_lines[i].decode('utf-8', errors='ignore') for i in range(0, len(batch_lines), 4)]
+        seq_data_list = [batch_lines[i].replace(b'\r', b'') for i in range(1, len(batch_lines), 4)]
+        qual_data_list = [batch_lines[i].replace(b'\r', b'') for i in range(3, len(batch_lines), 4)]
+        
+        seq_lengths = [len(s) for s in seq_data_list] # Concatenate and convert ONCE for entire batch (major speedup)
+        all_seq_bytes = b''.join(seq_data_list)
+        all_seq_array = np.frombuffer(all_seq_bytes, dtype=np.uint8) # Single frombuffer for entire batch (major speedup)
+        
+        # Apply base mapping to ENTIRE batch at once (avoid overhead from per-record way)
+        if keep_bases:
+            mapped_batch = all_seq_array
+        elif binary_map is not None:
+            mapped_batch = binary_map[all_seq_array]
+        else:
+            mapped_batch = base_map[all_seq_array]
+        
+        cumsum_lengths = np.concatenate([[0], np.cumsum(seq_lengths)])
+        
+        # Create views (instead of copies, which led to a major speedup as well)
+        seq_arrays = [mapped_batch[cumsum_lengths[i]:cumsum_lengths[i+1]] for i in range(batch_size)]
+        
+        
+        qual_arrays = [] # Process qualities (if needed)
+        if phred_map is not None:
+            all_qual_bytes = b''.join(qual_data_list)
+            all_qual_array = np.frombuffer(all_qual_bytes, dtype=np.uint8)
+            qual_mapped = phred_map[all_qual_array]
+            # Use views for quality too
+            qual_arrays = [qual_mapped[cumsum_lengths[i]:cumsum_lengths[i+1]] for i in range(batch_size)]
+        
+        # Build records
+        for idx in range(batch_size):
+            record_index = start_index + batch_start + idx
+            header_str = header_strs[idx]
             
-            header_str = buffer[i:header_end].decode('utf-8', errors='ignore')
-            
-            # Detect pair num if paired-end arg is enabled
+            # A fast path is to skip pair detection if not needed
             pair_number = 0
             if paired_end:
-                pair_number = detect_pair_number(header_str)
+                # Inline detection (avoids function call, to squeeze some speedups)
+                if '/1' in header_str or '_1' in header_str:
+                    pair_number = 1
+                elif '/2' in header_str or '_2' in header_str:
+                    pair_number = 2
             
-            # Compress header if enabled and extract metadata from first header
-            header = None
+            # Header compression
             if compress_headers and sequencer_type != 'none':
                 common, unique_id = compress_header(header_str, sequencer_type)
                 if common:
                     current_flowcell_metadata = common
                 
-                # Append pair number to header for modes 1/3
                 if paired_end and pair_number > 0:
-                    header = f"@{start_index + sequence_count}:{unique_id}/{pair_number}\n".encode('utf-8')
+                    header = f"@{record_index}:{unique_id}/{pair_number}\n".encode('utf-8')
                 else:
-                    header = f"@{start_index + sequence_count}:{unique_id}\n".encode('utf-8')
+                    header = f"@{record_index}:{unique_id}\n".encode('utf-8')
             else:
-                header = buffer[i:header_end+1]
-            # find base sequence
-            seq_end = buffer.find(b'\n', header_end + 1)
-            if seq_end == -1:
-                return records, buffer[i:], current_flowcell_metadata, sequence_count
+                header = batch_lines[idx * 4] + b'\n'
             
-            seq_data = buffer[header_end+1:seq_end].replace(b'\r', b'')
+            # Get quality
+            qual_vals = qual_arrays[idx] if qual_arrays else np.array([], dtype=np.uint8)
             
-            # find '+' line
-            plus_end = buffer.find(b'\n', seq_end + 1)
-            if plus_end == -1:
-                return records, buffer[i:], current_flowcell_metadata, sequence_count
-            
-            # find quality line(s)
-            qual_end = buffer.find(b'\n', plus_end + 1)
-            if qual_end == -1:
-                # check if we might have a complete record at end of buffer
-                potential_qual_length = len(seq_data)
-                if plus_end + 1 + potential_qual_length < len(buffer):
-                    qual_end = plus_end + 1 + potential_qual_length
-                else:
-                    return records, buffer[i:], current_flowcell_metadata, sequence_count
-            
-            qual_data = buffer[plus_end+1:qual_end].replace(b'\r', b'')
-            
-            # conditional to check for corrupted data length (mismatch between base num and quality size)
-            if len(seq_data) != len(qual_data):
-                print(f"Skipping corrupted record {start_index + sequence_count} due to length mismatch: {len(seq_data)} bases vs {len(qual_data)} quality scores.")
-                i = qual_end if qual_end < len(buffer) else len(buffer)
-                continue # skip current record
-            
-            # Process quality WITHOUT min/max calculation
-            qual_vals = None
-            qual_string = None
-            
-            if phred_map is not None:
-                qual_ascii = np.frombuffer(qual_data, dtype=np.uint8)
-                qual_vals = phred_map[qual_ascii]
-                
-                # Store original quality string if keep_quality is enabled
-                if keep_quality:
-                    if binary_quality:
-                        # Store the same numeric values we just calculated
-                        qual_string = qual_vals.copy()  # Use .copy() to avoid reference issues
-                    else:
-                        qual_string = qual_data
-            
-            # Process sequence
-            ascii_vals = np.frombuffer(seq_data, dtype=np.uint8)
-            
-            if keep_bases:
-                mapped_vals = ascii_vals  # Keep original ASCII values 
-            elif binary_bases:
-                binary_map = np.zeros(128, dtype=np.uint8)
-                binary_map[ord('A')] = 0
-                binary_map[ord('T')] = 1
-                binary_map[ord('C')] = 2
-                binary_map[ord('G')] = 3
-                binary_map[ord('N')] = 4
-                mapped_vals = binary_map[ascii_vals]
-            else:
-                mapped_vals = base_map[ascii_vals]  # Convert to 255 range
-            
-            # store new fastq record
             record = FASTQRecord(
-                index=start_index + sequence_count,
+                index=record_index,
                 header=header,
-                sequence=mapped_vals,
-                quality=qual_vals if qual_vals is not None else np.array([], dtype=np.uint8),
+                sequence=seq_arrays[idx],
+                quality=qual_vals,
                 pair_number=pair_number
             )
             records.append(record)
-            sequence_count += 1
-            
-            i = qual_end
-        else:
-            i += 1
     
-    return records, b'', current_flowcell_metadata, sequence_count
+    return records, leftover, current_flowcell_metadata, num_complete_records
 
 def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
                                quality_scaling: str, custom_formula: Optional[str],
@@ -415,8 +408,8 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         else:
             flat_mapped[low_quality_mask] = base_map[ord('N')]  # Convert to numeric
 
-    split_indices = np.cumsum(seq_lengths)[:-1] # Split back into individual sequences
-    processed_seqs = list(np.split(flat_mapped, split_indices))
+    cumsum_lengths = np.concatenate([[0], np.cumsum(seq_lengths)])
+    processed_seqs = [flat_mapped[cumsum_lengths[i]:cumsum_lengths[i+1]] for i in range(len(records))]
     
     # Write all sequences
     for idx, record in enumerate(records):
@@ -545,7 +538,6 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     current_flowcell_metadata = metadata
             
             # Process and write records immediately
-            # Process and write records immediately
             if records:
                 process_and_write_records(
                     records, outfile, base_map, quality_scaling,
@@ -621,7 +613,7 @@ def main():
     argument_parser.add_argument("output_path", type=str, help="Output file path")
 
     # Quick mode implementation
-    argument_parser.add_argument("mode", type=int,
+    argument_parser.add_argument("--mode", type=int,
                             help="What mode to use when writing out converted values." \
                             "1: Header compression only" \
                             "2: Base conversion into numbers only" \
