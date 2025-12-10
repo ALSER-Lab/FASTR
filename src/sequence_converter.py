@@ -7,6 +7,11 @@ import pstats
 import re
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import io
+import traceback
+
 
 @dataclass
 class FASTQRecord:
@@ -36,6 +41,7 @@ def detect_pair_number(header: str) -> int:
 
 ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
 PACBIO_PATTERN = re.compile(r'@([^/]+)/(\d+)/(\d+)_(\d+)')
+SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)\s+length=(\d+)')
 
 # Following functions extract IDs from respective machine headers AND common metadata: 
 def parse_illumina_header(header: str) -> Tuple[Dict, str]:
@@ -96,6 +102,20 @@ def parse_ont_header(header: str) -> Tuple[Dict, str]:
     
     return common, unique_id
 
+
+def parse_srr_header(header: str) -> Tuple[Dict, str]:
+    match = SRR_PATTERN.match(header)
+    if not match:
+        return {}, header 
+    
+    prefix, accession, read_index, spot, length = match.groups()
+
+    # Common metadata 
+    common = {'prefix': prefix, 'accession': accession,'length': length}
+    unique_id = f"{read_index}:{spot}"
+
+    return common, unique_id
+
 def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str]:
     """
     Compress a single header based on sequencer type, returning the common metadata and unique id portion
@@ -107,6 +127,8 @@ def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str]:
         return parse_pacbio_header(header)
     elif sequencer_type == 'ont':
         return parse_ont_header(header)
+    elif sequencer_type == 'srr':
+        return parse_srr_header(header)
     else:  # none or unrecognized
         return {}, header  # No compression
 
@@ -122,6 +144,8 @@ def format_metadata_header(common_metadata: Dict, sequencer_type: str) -> str:
             if key in common_metadata:
                 parts.append(f"{key}={common_metadata[key]}")
         return ':'.join(parts)
+    elif sequencer_type == 'srr':
+        return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}:len={common_metadata.get('length', '')}"
     else:
         return ''
 
@@ -262,6 +286,46 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
     
     return result.astype(np.uint8)
 
+def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers, 
+                        sequencer_type, paired_end, keep_bases, binary_bases, 
+                        keep_quality, binary_quality, quality_scaling, custom_formula,
+                        phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
+                        remove_repeating_header):
+    """
+    Worker function method that processes a single chunk in parallel.
+    """
+    try:
+        chunk_id, buffer, start_index = chunk_data
+        print(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")  # debug 
+        
+        # parse the records
+        records, _, metadata, count = parse_fastq_records_from_buffer(
+            buffer, start_index, base_map, phred_map,
+            compress_headers, sequencer_type, paired_end,
+            keep_bases, binary_bases, keep_quality, binary_quality
+        )
+        
+        print(f"Worker parsed {count} records from chunk {chunk_id}")  # debug
+        
+        # Process records and write to in mem buffer
+        output_buffer = io.BytesIO()
+        
+        if records:
+            process_and_write_records(
+                records, output_buffer, base_map, quality_scaling,
+                custom_formula, phred_alphabet_max, min_quality, keep_bases,
+                binary_bases, binary, keep_quality,
+                remove_repeating_header, compress_headers, BYTE_LOOKUP
+            )
+        
+        print(f"Worker completed chunk {chunk_id}")  # debug
+        return (chunk_id, output_buffer.getvalue(), metadata, count)
+    
+    except Exception as e: # I don't know HOW an error would arise honestly, but this is here just for safety
+        print(f"ERROR in worker processing chunk {chunk_id}: {e}")
+        traceback.print_exc()
+        raise
+
 
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray, 
                                     phred_map: Optional[np.ndarray], compress_headers: bool, 
@@ -353,9 +417,9 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                     current_flowcell_metadata = common
                 
                 if paired_end and pair_number > 0:
-                    header = f"@{record_index}:{unique_id}/{pair_number}\n".encode('utf-8')
+                    header = f"@{unique_id}/{pair_number}\n".encode('utf-8')
                 else:
-                    header = f"@{record_index}:{unique_id}\n".encode('utf-8')
+                    header = f"@{unique_id}\n".encode('utf-8')
             else:
                 header = batch_lines[idx * 4] + b'\n'
             
@@ -377,14 +441,15 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
                                quality_scaling: str, custom_formula: Optional[str],
                                phred_alphabet_max: int, min_quality: int, keep_bases: bool,
                                binary_bases: bool, binary: bool, keep_quality: bool,
-                               remove_repeating_header: bool, BYTE_LOOKUP: np.ndarray):
+                               remove_repeating_header: bool, compress_headers: bool,
+                               BYTE_LOOKUP: np.ndarray):
     """
     This function processes quality scaling on records and then immediately writes to file.
     """
     if not records:
         return
     
-    seq_lengths = [len(r.sequence) for r in records] # Store sequence lengths before concat
+    seq_lengths = [len(r.sequence) for r in records]  # Store sequence lengths before concat
     flat_mapped = np.concatenate([r.sequence for r in records]).astype(np.uint8)
     
     all_quals = [r.quality for r in records if len(r.quality) > 0]
@@ -394,8 +459,10 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         
         if not keep_bases and not binary_bases:
             # Apply scaling on flattened arrays 
-            flat_mapped = apply_quality_to_bases(flat_mapped, flat_quals, base_map, quality_scaling, 
-                                                 custom_formula, phred_alphabet_max)
+            flat_mapped = apply_quality_to_bases(
+                flat_mapped, flat_quals, base_map, quality_scaling,
+                custom_formula, phred_alphabet_max
+            )
     
     if min_quality > 0 and len(all_quals) > 0:
         flat_quals = np.concatenate(all_quals).astype(np.uint8)
@@ -409,50 +476,59 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
             flat_mapped[low_quality_mask] = base_map[ord('N')]  # Convert to numeric
 
     cumsum_lengths = np.concatenate([[0], np.cumsum(seq_lengths)])
-    processed_seqs = [flat_mapped[cumsum_lengths[i]:cumsum_lengths[i+1]] for i in range(len(records))]
+    processed_seqs = [
+        flat_mapped[cumsum_lengths[i]:cumsum_lengths[i+1]]
+        for i in range(len(records))
+    ]
     
     # Write all sequences
     for idx, record in enumerate(records):
-        # Store only unique ID if remove_repeating_header is enabled
+        # Only write headers if remove_repeating_header is disabled
         if not remove_repeating_header:
-            outfile.write(record.header)
+            if compress_headers:
+                outfile.write(record.header)
+            else:
+                outfile.write(record.header)
         
-        outfile.write(b'<')  # Add start marker for sequence (because sequences may be written out on multiple lines, sort of like FASTA's >'' signifier)
+        outfile.write(b'<')  # Add start marker for sequence
+        
+        seq_data = processed_seqs[idx]
+        
         if binary:
-            outfile.write(processed_seqs[idx].tobytes())
+            outfile.write(seq_data.tobytes())
         else:
             if keep_bases:
-                outfile.write(processed_seqs[idx].tobytes())  # Write ASCII directly
+                outfile.write(seq_data.tobytes())  # Write ASCII directly
             elif binary_bases:
-                outfile.write(b''.join(BYTE_LOOKUP[processed_seqs[idx]])) # Write binary bases as text numbers for inspection
+                outfile.write(b''.join(BYTE_LOOKUP[seq_data]))  # Write binary bases as text numbers for inspection
             else:
-                outfile.write(b''.join(BYTE_LOOKUP[processed_seqs[idx]]))  # Convert numbers to text
+                outfile.write(b''.join(BYTE_LOOKUP[seq_data]))  # Convert numbers to text
         
         outfile.write(b'\n')
         
         # Write quality scores if keep_quality is enabled
         if keep_quality and len(record.quality) > 0:
             outfile.write(b'+\n')
-            if binary_quality:
-                outfile.write(record.quality.tobytes()) # Write as binary bytes (numeric quality values)
-            else:
-                # Write as ASCII text (original quality string)
-                outfile.write(record.quality)
+            outfile.write(record.quality)  # ASCII quality string
             outfile.write(b'\n')
+
+
 
 def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min_quality=0, 
                           quality_scaling='none', binary=True, log_a=None, compress_headers=False, 
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False, 
                           binary_bases=False, binary_quality=False, custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False, 
-                          paired_end_mode='same_file', chunk_size_mb=100):
+                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4):
     """
     This function uses a streaming architecture to handle files of any size w/ constant mem usage.
-    This is where we write the binary vals, and this function acts as a "main" for our base scaling, parsing etc. 
+    This is where we write the binary vals, and this function acts as a "main" for our base scaling, parsing etc.
+    Uses streaming architecture with pool.imap (instead of normal pool.map) to try and maintain low (not low, moreso consistent) memory usage.
     """
     
     file_size = os.path.getsize(fastq_path)
     print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
+    print(f"Using {num_workers} worker processes for parallel processing")
     
     if compress_headers and sequencer_type != 'none':
         print(f"Header compression enabled (sequencer type: {sequencer_type})")
@@ -465,94 +541,113 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         print(f"Paired-end mode enabled (output mode: {paired_end_mode})")
     
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
-    print(f"Processing with {chunk_size_mb}MB chunks (streaming mode)")
-
+    print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
+    
     # Premake lookup table
     BYTE_LOOKUP = np.array([f'{i:03d}'.encode('ascii') for i in range(256)])
     
-    # For multiple flowcells tracking
-    flowcell_metadata_list = []  # List including things like common_metadata, start_index, end_index
+    # For tracking flowcells and sequences
+    flowcell_metadata_list = []
     current_flowcell_metadata = None
     flowcell_start_index = 0
     total_sequences = 0
-    buffer = b''
     
-    print("Collecting sequences...")
+    print("Reading and processing chunks in parallel...")
     
-    with open(fastq_path, 'rb', buffering=32*1024*1024) as infile, \
-         open(output_path, 'wb', buffering=32*1024*1024) as outfile:
+    def chunk_generator(): # Generator function to yield chunks as they're read
+        buffer = b''
+        chunk_id = 0
+        start_index = 0
         
-        # Write SRA accession first if provided
+        with open(fastq_path, 'rb', buffering=chunk_size_bytes) as infile:
+            while True:
+                chunk = infile.read(chunk_size_bytes)
+                if not chunk and not buffer:
+                    break
+                
+                buffer += chunk
+                
+                last_at = buffer.rfind(b'\n@') # Find last complete record boundary
+                if last_at == -1 or not chunk:
+                    process_buffer = buffer
+                    buffer = b''
+                else:
+                    process_buffer = buffer[:last_at+1]
+                    buffer = buffer[last_at+1:]
+                
+                if process_buffer:
+                    yield (chunk_id, process_buffer, start_index) # Yield chunk data for processing
+                    
+                    # estmate number of records for next chunk's start index
+                    estimated_records = process_buffer.count(b'\n@')
+                    start_index += estimated_records
+                    chunk_id += 1
+                
+                if chunk_id % 10 == 0: # maybe this isn't wise right now? I'll tweak this on deployment to not barf out a ton of text
+                    print(f"Read {chunk_id} chunks...")
+    
+    with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
+        # Write SRA accession if provided
         if sra_accession:
             outfile.write(f"@{sra_accession}\n".encode('utf-8'))
         
         # Reserve space for metadata headers (we'll come back to write these)
         metadata_position = outfile.tell()
+        if compress_headers and sequencer_type != 'none':
+            outfile.write(b'\n')
         
-        # Process file in chunks
-        while True:
-            chunk = infile.read(chunk_size_bytes)
-            if not chunk and not buffer:
-                break
-            
-            buffer += chunk
-            
-            # Find last complete record boundary
-            last_at = buffer.rfind(b'\n@')
-            if last_at == -1 or not chunk:  # Last chunk/no complete record
-                process_buffer = buffer
-                buffer = b''
-            else:
-                process_buffer = buffer[:last_at+1]
-                buffer = buffer[last_at+1:]
-            
-            # Parse records from this buffer
-            records, leftover, metadata, count = parse_fastq_records_from_buffer(
-                process_buffer, total_sequences, base_map, phred_map,
-                compress_headers, sequencer_type, paired_end,
-                keep_bases, binary_bases, keep_quality, binary_quality
+        # create worker pool and process chunks as they come in
+        with Pool(processes=num_workers) as pool:
+            # Create partial function w/ fixed args
+            worker_func = partial(
+                process_chunk_worker,
+                base_map=base_map,
+                phred_map=phred_map,
+                compress_headers=compress_headers,
+                sequencer_type=sequencer_type,
+                paired_end=paired_end,
+                keep_bases=keep_bases,
+                binary_bases=binary_bases,
+                keep_quality=keep_quality,
+                binary_quality=binary_quality,
+                quality_scaling=quality_scaling,
+                custom_formula=custom_formula,
+                phred_alphabet_max=phred_alphabet_max,
+                min_quality=min_quality,
+                BYTE_LOOKUP=BYTE_LOOKUP,
+                binary=binary,
+                remove_repeating_header=remove_repeating_header
             )
             
-            # Track flowcell changes if multiple_flowcells is enabled
-            if metadata:
-                if multiple_flowcells:
-                    if current_flowcell_metadata is None:
-                        # First flowcell
+            # Use imap to process chunks as they're read (streaming) -- previous implementation used normal pool.map, which loaded the file into memory
+            # chunksize=1 makes sure order is preserved
+            for chunk_id, processed_bytes, metadata, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
+                # Write immediately as each chunk completes
+                outfile.write(processed_bytes)
+                
+                if metadata: # Track flowcell metadata
+                    if multiple_flowcells:
+                        if current_flowcell_metadata is None:
+                            current_flowcell_metadata = metadata
+                            flowcell_start_index = total_sequences
+                        elif not metadata_dict_equals(current_flowcell_metadata, metadata):
+                            flowcell_metadata_list.append((
+                                current_flowcell_metadata.copy(),
+                                flowcell_start_index,
+                                total_sequences - 1
+                            ))
+                            current_flowcell_metadata = metadata
+                            flowcell_start_index = total_sequences
+                            print(f"Flowcell change detected at sequence {total_sequences}")
+                    elif current_flowcell_metadata is None:
                         current_flowcell_metadata = metadata
-                        flowcell_start_index = total_sequences
-                    elif not metadata_dict_equals(current_flowcell_metadata, metadata):
-                        # Flowcell changed! Save the previous flowcell range
-                        flowcell_metadata_list.append((
-                            current_flowcell_metadata.copy(),
-                            flowcell_start_index,
-                            total_sequences - 1
-                        ))
-                        current_flowcell_metadata = metadata
-                        flowcell_start_index = total_sequences
-                        print(f"Flowcell change detected at sequence {total_sequences}")
-                elif multiple_flowcells and not metadata and current_flowcell_metadata is not None:
-                    # Empty metadata but we had valid metadata before? So we'll skip this sequence/handle as error
-                    print(f"WARNING: Failed to parse header at sequence {total_sequences}, skipping flowcell check")
-                elif current_flowcell_metadata is None:
-                    # Single flowcell mode (original behavior)
-                    current_flowcell_metadata = metadata
-            
-            # Process and write records immediately
-            if records:
-                process_and_write_records(
-                    records, outfile, base_map, quality_scaling,
-                    custom_formula, phred_alphabet_max, min_quality, keep_bases,
-                    binary_bases, binary, keep_quality,
-                    remove_repeating_header, BYTE_LOOKUP
-                )
-            
-            total_sequences += count
-            buffer = leftover + buffer  # Keep leftover for next iteration
-            
-            if total_sequences % 100000 == 0:
-                print(f"Collected {total_sequences:,} sequences...")
+                
+                total_sequences += count
+                
+                if total_sequences % 100000 == 0:
+                    print(f"Processed {total_sequences:,} sequences...")
         
-        # Finalize the last flowcell range if multiple flowcells enabled
+        # Finalize flowcell tracking
         if multiple_flowcells and current_flowcell_metadata is not None:
             flowcell_metadata_list.append((
                 current_flowcell_metadata.copy(),
@@ -562,15 +657,15 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         elif current_flowcell_metadata:
             flowcell_metadata_list.append((current_flowcell_metadata, 0, total_sequences - 1))
         
-        # Print flowcell summary
+        # Print flowcell summary (when we start testing it later on)
         if multiple_flowcells and len(flowcell_metadata_list) > 1:
             print(f"\nDetected {len(flowcell_metadata_list)} flowcells:")
             for idx, (metadata, start, end) in enumerate(flowcell_metadata_list):
                 fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
-        # Now go back and write metadata headers at the beginning
-        # Write metadata header(s) at the top if compression is enabled
+        # Now go back and write metadata headers at the beginning 
+        # This is why when you try to open the file while data is being written, the first 1-2 line(s) are blank! We write common metadata after everything else
         if compress_headers and sequencer_type != 'none':
             end_position = outfile.tell()
             outfile.seek(metadata_position)
@@ -600,10 +695,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 parameter_line = f"#{equation}\n"
                 outfile.write(parameter_line.encode('utf-8'))
             
-            # Fill remaining space to avoid corrupting data
+            # Fill remaining space to avoid corrupting data (just to be careful yk)
             current_pos = outfile.tell()
-            if current_pos < end_position:
-                outfile.write(b'\n' * (end_position - current_pos))
     
     print(f"Total sequences written: {total_sequences:,}")
 
@@ -635,7 +728,7 @@ def main():
     argument_parser.add_argument("--compress_headers", type=int, default=0,
                                 help="Compress FASTQ headers on-the-fly (0/1, default 0)")
     argument_parser.add_argument("--sequencer_type", type=str, 
-                                choices=['none', 'illumina', 'pacbio', 'ont'],
+                                choices=['none', 'illumina', 'pacbio', 'ont', 'srr'],
                                 default='none',
                                 help="Sequencer type for header compression (default: none)")
     argument_parser.add_argument("--multiple_flowcells", type=int, default=0,
@@ -671,7 +764,7 @@ def main():
     
     argument_parser.add_argument("--remove_repeating_header", type=int, default=0,
                             help="Remove repeating metadata from individual sequence headers, store only at top (0/1, default 0)")
-    argument_parser.add_argument("--phred_alphabet", type=str, default='phred42', # Added to prepare for future implementation of sequencing machine parameter
+    argument_parser.add_argument("--phred_alphabet", type=str, default='phred42',
                             help="What phred quality (q-score) ascii character alphabet is used by the inputted fastq")
 
     # Base mapping
@@ -685,7 +778,9 @@ def main():
     argument_parser.add_argument("--profile", type=int, default=0,
                                 help="Enable profiling (0/1, default 0)")
     
-    
+    # Multiprocessing
+    argument_parser.add_argument("--num_workers", type=int, default=1,
+                                help="Number of parallel workers (default: 1, use 4+ for large files >5GB)")
 
     user_arguments = argument_parser.parse_args()
     alphabet_max = None
@@ -760,20 +855,25 @@ def main():
     phred_map = create_phred_quality_map(user_arguments.phred_offset, phred_alphabet_max) if user_arguments.extract_quality else None
 
     print(f"Converting sequences from {user_arguments.input_path}...")
-    export_scalars_to_txt(user_arguments.input_path, numpy_base_map, 
-                          user_arguments.output_path, phred_map, user_arguments.min_quality, 
-                          user_arguments.quality_scaling, user_arguments.binary_write,
-                          user_arguments.log_a, compress_headers=(user_arguments.compress_headers == 1),
-                          sequencer_type=user_arguments.sequencer_type,
-                          sra_accession=user_arguments.sra_accession,
-                          keep_bases=user_arguments.keep_bases, keep_quality=user_arguments.keep_quality,
-                          binary_bases=user_arguments.binary_bases, binary_quality=user_arguments.binary_quality,
-                          custom_formula=user_arguments.custom_formula,
-                          multiple_flowcells=(user_arguments.multiple_flowcells == 1),
-                          remove_repeating_header=(user_arguments.remove_repeating_header == 1),
-                          phred_alphabet_max=phred_alphabet_max,
-                          paired_end=(user_arguments.paired_end == 1),
-                          paired_end_mode=user_arguments.paired_end_mode)
+    
+    export_scalars_to_txt(
+        user_arguments.input_path, numpy_base_map, 
+        user_arguments.output_path, phred_map, user_arguments.min_quality, 
+        user_arguments.quality_scaling, user_arguments.binary_write,
+        user_arguments.log_a, compress_headers=(user_arguments.compress_headers == 1),
+        sequencer_type=user_arguments.sequencer_type,
+        sra_accession=user_arguments.sra_accession,
+        keep_bases=user_arguments.keep_bases, keep_quality=user_arguments.keep_quality,
+        binary_bases=user_arguments.binary_bases, binary_quality=user_arguments.binary_quality,
+        custom_formula=user_arguments.custom_formula,
+        multiple_flowcells=(user_arguments.multiple_flowcells == 1),
+        remove_repeating_header=(user_arguments.remove_repeating_header == 1),
+        phred_alphabet_max=phred_alphabet_max,
+        paired_end=(user_arguments.paired_end == 1),
+        paired_end_mode=user_arguments.paired_end_mode,
+        num_workers=user_arguments.num_workers
+        )
+
     
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
@@ -793,6 +893,5 @@ def main():
         print("By total time:")
         print("="*80)
         stats.print_stats(30)
-
 if __name__ == "__main__":
     main()
