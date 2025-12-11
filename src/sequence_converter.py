@@ -41,7 +41,7 @@ def detect_pair_number(header: str) -> int:
 
 ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
 PACBIO_PATTERN = re.compile(r'@([^/]+)/(\d+)/(\d+)_(\d+)')
-SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)\s+length=(\d+)')
+SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)')
 
 # Following functions extract IDs from respective machine headers AND common metadata: 
 def parse_illumina_header(header: str) -> Tuple[Dict, str]:
@@ -108,10 +108,10 @@ def parse_srr_header(header: str) -> Tuple[Dict, str]:
     if not match:
         return {}, header 
     
-    prefix, accession, read_index, spot, length = match.groups()
+    prefix, accession, read_index, spot = match.groups()
 
     # Common metadata 
-    common = {'prefix': prefix, 'accession': accession,'length': length}
+    common = {'prefix': prefix, 'accession': accession}
     unique_id = f"{read_index}:{spot}"
 
     return common, unique_id
@@ -145,7 +145,7 @@ def format_metadata_header(common_metadata: Dict, sequencer_type: str) -> str:
                 parts.append(f"{key}={common_metadata[key]}")
         return ':'.join(parts)
     elif sequencer_type == 'srr':
-        return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}:len={common_metadata.get('length', '')}"
+        return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}"
     else:
         return ''
 
@@ -174,14 +174,14 @@ def get_scaling_equation(scaling_method: str, custom_formula=None, phred_alphabe
         return "x"
 
 
-def create_phred_quality_map(phred_offset=0, phred_alphabet_max=41): 
+def create_phred_quality_map(phred_offset=33, phred_alphabet_max=41): 
     # Offset is more of a custom thing for the user? It's not really in use, as the offset is applied during fastq gen itself
     phred_map = np.zeros(128, dtype=np.uint8)
     
     for ascii_val in range(128):
         quality_score = ascii_val - phred_offset
         # Clip to range [0, (phred_alphabet_max - 1)]
-        quality_score = max(40, min(quality_score, (phred_alphabet_max-1)))
+        quality_score = max(0, min(quality_score, (phred_alphabet_max-1)))
         phred_map[ascii_val] = quality_score
     
     return phred_map
@@ -589,11 +589,14 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         # Write SRA accession if provided
         if sra_accession:
-            outfile.write(f"@{sra_accession}\n".encode('utf-8'))
+            outfile.write(f"#{sra_accession}\n".encode('utf-8'))
         
         # Reserve space for metadata headers (we'll come back to write these)
         metadata_position = outfile.tell()
+        MAX_METADATA_LINES = 20  
+        placeholder_size = MAX_METADATA_LINES * 200  # 200 chars per line should be enough
         if compress_headers and sequencer_type != 'none':
+            outfile.write(b' ' * placeholder_size)  # Write spaces as placeholder
             outfile.write(b'\n')
         
         # create worker pool and process chunks as they come in
@@ -670,33 +673,35 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             end_position = outfile.tell()
             outfile.seek(metadata_position)
             
+            metadata_lines = []
+            
             if multiple_flowcells and len(flowcell_metadata_list) > 0:
-                # Write all flowcell metadata blocks
+                # Build metadata lines
                 for metadata, start_idx, end_idx in flowcell_metadata_list:
                     metadata_line = format_metadata_header(metadata, sequencer_type)
-                    outfile.write(f"@{metadata_line}\n".encode('utf-8'))
-                    
-                    # Write parameter line with equation
+                    metadata_lines.append(f"#{metadata_line}\n")
+                    metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                    parameter_line = f"#{equation}\n"
-                    outfile.write(parameter_line.encode('utf-8'))
-                                        
-                    # Write range line for multiple flowcells 
-                    range_line = f"@RANGE:{start_idx}-{end_idx}\n"
-                    outfile.write(range_line.encode('utf-8'))
+                    metadata_lines.append(f"#{equation}\n")
+                    metadata_lines.append(f"#RANGE:{start_idx}-{end_idx}\n")
             else:
-                # Single flowcell (original behavior)
+                # Single flowcell
                 if current_flowcell_metadata:
                     metadata_line = format_metadata_header(current_flowcell_metadata, sequencer_type)
-                    outfile.write(f"@{metadata_line}\n".encode('utf-8'))
-                
-                # Write parameter line with equation
+                    metadata_lines.append(f"#{metadata_line}\n")
+                metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                 equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                parameter_line = f"#{equation}\n"
-                outfile.write(parameter_line.encode('utf-8'))
+                metadata_lines.append(f"#{equation}\n")
             
-            # Fill remaining space to avoid corrupting data (just to be careful yk)
-            current_pos = outfile.tell()
+            # Write metadata and pad remaining space
+            metadata_bytes = ''.join(metadata_lines).encode('utf-8')
+            outfile.write(metadata_bytes)
+            remaining = placeholder_size - len(metadata_bytes)
+            if remaining > 0:
+                outfile.write(b' ' * remaining)
+            outfile.write(b'\n')
+            
+            outfile.seek(end_position)  # Return to end
     
     print(f"Total sequences written: {total_sequences:,}")
 
@@ -737,8 +742,8 @@ def main():
     # Quality arguments
     argument_parser.add_argument("--extract_quality", type=int, default=1, 
                                 help="For FASTQ: extract quality scores (0/1, default 1)")
-    argument_parser.add_argument("--phred_offset", type=int, default=0,
-                                help="Phred quality offset (if needed)(default 0)")
+    argument_parser.add_argument("--phred_offset", type=int, default=33,
+                                help="Phred quality offset (if needed)(default 33)")
     argument_parser.add_argument("--min_quality", type=int, default=0,
                                 help="Minimum quality score threshold (default 0)")
     argument_parser.add_argument("--quality_scaling", type=str, 
