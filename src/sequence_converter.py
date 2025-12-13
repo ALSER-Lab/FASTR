@@ -40,7 +40,10 @@ def detect_pair_number(header: str) -> int:
 
 
 ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
-PACBIO_PATTERN = re.compile(r'@([^/]+)/(\d+)/(\d+)_(\d+)')
+PACBIO_CCS_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs')
+PACBIO_HIFI_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs(?:/(\w+))?')  # Handles optional suffix like /fwd or /rev
+PACBIO_SUBREAD_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)')
+PACBIO_CLR_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+RQ=[\d.]+)?')  # CLR with optional read quality
 SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)')
 
 # Following functions extract IDs from respective machine headers AND common metadata: 
@@ -63,15 +66,49 @@ def parse_illumina_header(header: str) -> Tuple[Dict, str]:
     unique_id = f"{groups[4]}:{groups[5]}:{groups[6]}:{groups[7]}:{groups[8]}:{groups[9]}:{groups[10]}"
     return common, unique_id
 
-def parse_pacbio_header(header: str) -> Tuple[Dict, str]:
-    match = PACBIO_PATTERN.match(header)
+
+def parse_pacbio_ccs_header(header: str) -> Tuple[Dict, str]:
+    """Parse PacBio CCS (Circular Consensus Sequence) headers"""
+    match = PACBIO_CCS_PATTERN.match(header)
     if not match:
         return {}, header
     
-    common = {'movie': match.group(1)}
-    # Unique identifier: zmw/start_end
+    common = {'movie': match.group(1), 'read_type': 'ccs'}
+    unique_id = match.group(2)  # Just the ZMW number
+    return common, unique_id
+
+def parse_pacbio_hifi_header(header: str) -> Tuple[Dict, str]:
+    """Parse PacBio HiFi headers (CCS with optional strand info)"""
+    match = PACBIO_HIFI_PATTERN.match(header)
+    if not match:
+        return {}, header
+    
+    common = {'movie': match.group(1), 'read_type': 'hifi'}
+    unique_id = match.group(2)
+    if match.group(3):  # Optional suffix like fwd/rev
+        unique_id = f"{unique_id}/{match.group(3)}"
+    return common, unique_id
+
+def parse_pacbio_subread_header(header: str) -> Tuple[Dict, str]:
+    """Parse PacBio subread headers (with start/end coordinates)"""
+    match = PACBIO_SUBREAD_PATTERN.match(header)
+    if not match:
+        return {}, header
+    
+    common = {'movie': match.group(1), 'read_type': 'subread'}
     unique_id = f"{match.group(2)}/{match.group(3)}_{match.group(4)}"
     return common, unique_id
+
+def parse_pacbio_clr_header(header: str) -> Tuple[Dict, str]:
+    """Parse PacBio CLR (Continuous Long Read) headers"""
+    match = PACBIO_CLR_PATTERN.match(header)
+    if not match:
+        return {}, header
+    
+    common = {'movie': match.group(1), 'read_type': 'clr'}
+    unique_id = f"{match.group(2)}/{match.group(3)}_{match.group(4)}"
+    return common, unique_id
+
 
 def parse_ont_header(header: str) -> Tuple[Dict, str]:
     parts = header.strip().split()
@@ -123,8 +160,14 @@ def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str]:
     """
     if sequencer_type == 'illumina':
         return parse_illumina_header(header)
-    elif sequencer_type == 'pacbio':
-        return parse_pacbio_header(header)
+    elif sequencer_type == 'pacbio_hifi':
+        return parse_pacbio_hifi_header(header)
+    elif sequencer_type == 'pacbio_clr':
+        return parse_pacbio_clr_header(header)
+    elif sequencer_type == 'pacbio_ccs':
+        return parse_pacbio_ccs_header(header)
+    elif sequencer_type == 'pacbio_subread':  
+        return parse_pacbio_subread_header(header)          
     elif sequencer_type == 'ont':
         return parse_ont_header(header)
     elif sequencer_type == 'srr':
@@ -136,8 +179,13 @@ def format_metadata_header(common_metadata: Dict, sequencer_type: str) -> str:
     # Based on type of sequencer machine inputted returns formatted common metadata header
     if sequencer_type == 'illumina':
         return f"{common_metadata.get('instrument', '')}:{common_metadata.get('run_id', '')}:{common_metadata.get('flowcell', '')}:{common_metadata.get('lane', '')}"
-    elif sequencer_type == 'pacbio':
-        return common_metadata.get('movie', '')
+    elif sequencer_type in ['pacbio', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
+        # All PacBio formats share the movie name as common metadata
+        movie = common_metadata.get('movie', '')
+        read_type = common_metadata.get('read_type', '')
+        if read_type:
+            return f"{movie}:{read_type}"
+        return movie
     elif sequencer_type == 'ont':
         parts = []
         for key in ['runid', 'sampleid', 'model_version_id', 'basecall_model_version_id']:
@@ -231,6 +279,9 @@ def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray
         print("  'x ** 2 / 100'")
         raise
 
+def apply_clamping_to_equation(arr):
+    return np.maximum(np.minimum(arr, 63), 1)
+
 # Application of quality to bases
 def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method='none', 
                            custom_formula=None, phred_alphabet_max=41):
@@ -247,7 +298,7 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
             return base_values
         
         # Parse and evaluate custom formula
-        scale_factors = parse_custom_formula(custom_formula, quality_scores)
+        scale_factors = apply_clamping_to_equation(parse_custom_formula(custom_formula, quality_scores))
 
     elif scaling_method == 'log':
         # This makes larger quality scores closer in difference, and smaller quality scores more different from eachother. 
@@ -255,7 +306,7 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
         # Normal np implementation is: scale_factors = 1 + 62 * (np.log(quality_scores - 39) / np.log(54))
         # Do this to shut up divison by zero errors or other invalid vals that get clipped anyways
         with np.errstate(divide='ignore', invalid='ignore'): 
-            LOG_DICT = np.clip(1 + 62 * (np.log(np.arange(0, 94, dtype=np.float32) - 1) / np.log((phred_alphabet_max-1))),1, 63).astype(np.uint8)
+            LOG_DICT = np.clip(1 + 62 * (np.log(np.arange(0, phred_alphabet_max + 1, dtype=np.float32) - 1) / np.log((phred_alphabet_max-1))),1, 63).astype(np.uint8)
             scale_factors = LOG_DICT[quality_scores]
 
     elif scaling_method == 'linear':
@@ -282,7 +333,7 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
     base_min_lookup[255] = 193   # G
     base_min_lookup[1] = 0       # N, color of 1 though I should probably change this 
     
-    result = base_min_lookup[base_values] + scale_factors - 1
+    result = base_min_lookup[base_values] + scale_factors 
     
     return result.astype(np.uint8)
 
@@ -335,7 +386,17 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     records = []
     current_flowcell_metadata = None
     lines = buffer.split(b'\n') # Split entire buffer ONCE
-    num_complete_records = (len(lines) - 1) // 4 # Calculate amt of complete FASTQ records
+    # Check if we have complete 4-line records
+    # A complete record ends with a quality line, so we need lines to be a multiple of 4
+    # But split creates an extra empty element if the file ends with \n
+    if lines and lines[-1] == b'':
+        # File ended with newline, remove empty element
+        lines = lines[:-1]
+    
+    num_complete_records = len(lines) // 4  # Calculate amt of complete FASTQ records
+    
+    if num_complete_records == 0: # Quick return
+        return records, buffer, current_flowcell_metadata, 0
     
     if num_complete_records == 0: # Quick return
         return records, buffer, current_flowcell_metadata, 0
@@ -679,7 +740,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 # Build metadata lines
                 for metadata, start_idx, end_idx in flowcell_metadata_list:
                     metadata_line = format_metadata_header(metadata, sequencer_type)
-                    metadata_lines.append(f"#{metadata_line}\n")
+                    metadata_lines.append(f"#COMMON:{metadata_line}\n")
                     metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                     metadata_lines.append(f"#{equation}\n")
@@ -688,7 +749,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 # Single flowcell
                 if current_flowcell_metadata:
                     metadata_line = format_metadata_header(current_flowcell_metadata, sequencer_type)
-                    metadata_lines.append(f"#{metadata_line}\n")
+                    metadata_lines.append(f"#COMMON:{metadata_line}\n")
                 metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                 equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                 metadata_lines.append(f"#{equation}\n")
@@ -705,10 +766,87 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     
     print(f"Total sequences written: {total_sequences:,}")
 
+def validate_and_adjust_formula(formula: str, phred_alphabet_max: int) -> str:
+    """
+    Validate that a custom formula produces values in 0-62 range.
+    """
+    # Test the formula across the quality range
+    test_qualities = np.arange(phred_alphabet_max + 1, dtype=np.float32)
+    
+    try:
+        output = parse_custom_formula(formula, test_qualities)
+        
+        # Check the range AFTER clipping (which parse_custom_formula does internally)
+        min_val = np.min(output)
+        max_val = np.max(output)
+        
+        print(f"\nFormula validation for '{formula}':")
+        print(f"  Input range: 0-{phred_alphabet_max}")
+        print(f"  Output range: {min_val:.2f} to {max_val:.2f}")
+        
+        # Check if significant information loss occurs due to clipping
+        # Re-evaluate without clipping to see original range
+        cleaned = re.sub(r'^\s*f\s*\(\s*x\s*\)\s*=\s*', '', formula.strip()).replace('^', '**')
+        safe_dict = {
+            'x': test_qualities, 
+            'ln': np.log, 'log': np.log, 'log10': np.log10, 'exp': np.exp,
+            'sqrt': np.sqrt, 'abs': np.abs, 'min': np.minimum, 'max': np.maximum,
+            'np': np, '__builtins__': {}
+        }
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            raw_output = eval(cleaned, safe_dict)
+        
+        if np.isscalar(raw_output):
+            raw_output = np.full_like(test_qualities, raw_output, dtype=np.float32)
+        else:
+            raw_output = raw_output.astype(np.float32)
+        
+        # Handle infinities and NaNs
+        raw_output_clean = np.nan_to_num(raw_output, nan=0.0, posinf=100, neginf=-100)
+        
+        raw_min = np.min(raw_output_clean)
+        raw_max = np.max(raw_output_clean)
+        
+        # Calculate how many values are clipped
+        clamped_low = np.sum(raw_output_clean < 1)
+        clamped_high = np.sum(raw_output_clean > 63)
+        total_values = len(test_qualities)
+        
+        if raw_min < 1 or raw_max > 63:
+            print(f" WARNING: Formula produces values outside 1-63 range before clipping!")
+            print(f"  Raw output range: {raw_min:.2f} to {raw_max:.2f}")
+            print(f"  Values clamped: {clamped_low + clamped_high}/{total_values} " +
+                  f"({100 * (clamped_low + clamped_high) / total_values:.1f}%)")
+            
+            if clamped_low > 0:
+                print(f"    - {clamped_low} values below 1 (will be clamped to 1)")
+            if clamped_high > 0:
+                print(f"    - {clamped_high} values above 63 (will be clamped to 63)")
+            
+            print(f"  This will cause loss of information during reconstruction.")
+        else:
+            print(f" Formula produces valid scaled values (1-63 range)")
+        
+        return formula
+        
+    except Exception as e:
+        print(f"\nERROR: Failed to validate formula '{formula}'")
+        print(f"Error details: {e}")
+        print("\nSupported operations: +, -, *, /, ** (power), (), ln(), log(), log10(), exp(), sqrt(), abs()")
+        print("Variable 'x' represents quality scores")
+        raise
+
+
 def main():
     argument_parser = argparse.ArgumentParser(description="Convert and compress FASTQ/FASTA files to scalar format")
     argument_parser.add_argument("input_path", type=str, help="Path of .fasta or .fastq file")
     argument_parser.add_argument("output_path", type=str, help="Output file path")
+
+    argument_parser.add_argument("--quality_scaling", type=str, 
+                                 choices=['log','log_custom', 'custom'], 
+                                 default='none',
+                                 help="Quality scaling method (default: none)")
 
     # Quick mode implementation
     argument_parser.add_argument("--mode", type=int,
@@ -733,7 +871,7 @@ def main():
     argument_parser.add_argument("--compress_headers", type=int, default=0,
                                 help="Compress FASTQ headers on-the-fly (0/1, default 0)")
     argument_parser.add_argument("--sequencer_type", type=str, 
-                                choices=['none', 'illumina', 'pacbio', 'ont', 'srr'],
+                                choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr'],
                                 default='none',
                                 help="Sequencer type for header compression (default: none)")
     argument_parser.add_argument("--multiple_flowcells", type=int, default=0,
@@ -746,10 +884,6 @@ def main():
                                 help="Phred quality offset (if needed)(default 33)")
     argument_parser.add_argument("--min_quality", type=int, default=0,
                                 help="Minimum quality score threshold (default 0)")
-    argument_parser.add_argument("--quality_scaling", type=str, 
-                                 choices=['log','log_custom', 'custom'], 
-                                 default='none',
-                                 help="Quality scaling method (default: none)")
     argument_parser.add_argument("--custom_formula", type=str, default=None,
                                 help="Custom formula for quality scaling (use 'x' for quality score). "
                                      "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
@@ -837,6 +971,12 @@ def main():
         phred_alphabet_max = 62
     elif user_arguments.phred_alphabet == "phred94":
         phred_alphabet_max = 93
+
+    if user_arguments.custom_formula:
+        user_arguments.custom_formula = validate_and_adjust_formula(
+            user_arguments.custom_formula, 
+            phred_alphabet_max
+        )
     
 
     # Create base map

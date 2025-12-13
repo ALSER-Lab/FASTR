@@ -15,7 +15,6 @@ class MetadataBlock:
     scaling_equation: str
     start_index: int
     end_index: int
-
 def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Optional[str]]:
     """
     Parse metadata headers from the beginning of the file in order to reconstruct it later
@@ -35,8 +34,9 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
         print(f"  Line {i}: {line[:80]}")
     
     line_idx = 0
-    # Check for SRA accession (first line starting with #). This philosophy of having the SRA accession as the first value may change, but during dev we'll keep it like this. 
-    if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE']):
+    
+    # Check for SRA accession (first line starting with # but not a metadata tag)
+    if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'COMMON:']):
         # First line is SRA accession
         sra_accession = lines[0][1:]  # Remove #
         print(f"Found SRA accession: {sra_accession}")
@@ -46,8 +46,7 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
     while line_idx < len(lines):
         line = lines[line_idx]
         
-        # Stop if we hit sequence data (lines starting with @ but not @RANGE, as @RANGE signifies different flowcells)
-        # Sequence headers SHOULD be short and start w/ @
+        # Stop if we hit sequence data (lines starting with @ but not @RANGE)
         if line.startswith('@') and not line.startswith('@RANGE'):
             # Check if this looks like a sequence header vs metadata
             test_content = line[1:]  # Remove @
@@ -65,20 +64,37 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
         if line.startswith('<'):
             break
         
+        # Look for common metadata line (new format)
+        if line.startswith('#COMMON:'):
+            common_metadata_str = line.split(':', 1)[1].strip()
+            print(f"Found COMMON metadata: {common_metadata_str}")
+            # We'll use this when we find the SEQUENCER line
+            line_idx += 1
+            continue
+        
         # Look for sequencer type line
         if line.startswith('#SEQUENCER:'):
             sequencer_type = line.split(':', 1)[1].strip()
+            
+            # Look back one line for COMMON metadata
+            common_metadata_str = None
+            if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
+                common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
+            
             line_idx += 1
             
             # Parse scaling equation (next line should start with #)
             scaling_equation = 'x'
-            if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER'):
+            if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER') and not lines[line_idx].startswith('#COMMON:'):
                 scaling_equation = lines[line_idx][1:].strip()
-                print(f"DEBUG: Found equation: {scaling_equation}")
+                print(f"Found equation: {scaling_equation}")
                 line_idx += 1
             
-            # Use SRA accession as metadata if available
-            if sra_accession:
+            # Parse common metadata based on sequencer type
+            if common_metadata_str:
+                common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
+                print(f"Parsed common metadata: {common_metadata}")
+            elif sra_accession:
                 common_metadata = parse_common_metadata(sra_accession, 'srr')
             else:
                 common_metadata = {}
@@ -86,10 +102,11 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
             start_index = 0
             end_index = -1
             
-            # Check for range, though flowcell implementation is kind of iffy as of now
+            # Check for range
             if line_idx < len(lines) and lines[line_idx].startswith('@RANGE:'):
                 range_str = lines[line_idx][7:]
                 start_index, end_index = map(int, range_str.split('-'))
+                print(f"Found range: {start_index}-{end_index}")
                 line_idx += 1
             
             metadata_blocks.append(MetadataBlock(
@@ -104,8 +121,7 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
     
     if not metadata_blocks:
         print("WARNING: No metadata blocks found, using defaults") 
-        # We'll just create a default block if none found
-        # Later I may add the ability to make inferences from headers w/o metadata (like an 'auto' mode, but that's later)
+        # Create a default block if none found
         metadata_blocks.append(MetadataBlock(
             common_metadata={'prefix': sra_accession.split('.')[0][:3] if sra_accession else '', 
                            'accession': sra_accession.split('.')[0][3:] if sra_accession else ''} if sra_accession else {},
@@ -190,8 +206,13 @@ def parse_common_metadata(metadata_str: str, sequencer_type: str) -> Dict:
             'flowcell': parts[2] if len(parts) > 2 else '',
             'lane': parts[3] if len(parts) > 3 else ''
         }
-    elif sequencer_type == 'pacbio':
-        return {'movie': metadata_str}
+    elif sequencer_type in ['pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
+        # Handle PacBio metadata: "movie:read_type" or just "movie"
+        parts = metadata_str.split(':')
+        result = {'movie': parts[0] if len(parts) > 0 else metadata_str}
+        if len(parts) > 1:
+            result['read_type'] = parts[1]
+        return result
     elif sequencer_type == 'ont':
         kvs = {}
         for part in metadata_str.split(':'):
@@ -200,7 +221,7 @@ def parse_common_metadata(metadata_str: str, sequencer_type: str) -> Dict:
                 kvs[key] = value
         return kvs
     elif sequencer_type == 'srr':
-        match = re.match(r'([A-Z]+)(\d+)', metadata_str) # Take prefix + accession
+        match = re.match(r'([A-Z]+)(\d+)', metadata_str)
         if match:
             return {'prefix': match.group(1), 'accession': match.group(2)}
         return {}
@@ -219,9 +240,29 @@ def reconstruct_header(unique_id: str, common_metadata: Dict, sequencer_type: st
         else:
             header = f"@{unique_id}"
     
-    elif sequencer_type == 'pacbio':
-        # unique_id format: zmw/start_end
-        header = f"@{common_metadata['movie']}/{unique_id}"
+    elif sequencer_type == 'pacbio_ccs':
+        # Format: @movie/zmw/ccs
+        movie = common_metadata.get('movie', '')
+        header = f"@{movie}/{unique_id}/ccs"
+    
+    elif sequencer_type == 'pacbio_hifi':
+        # Format: @movie/zmw/ccs or @movie/zmw/ccs/fwd etc
+        movie = common_metadata.get('movie', '')
+        # unique_id might already include suffix like "123/fwd"
+        if '/ccs' in unique_id:
+            header = f"@{movie}/{unique_id}"
+        else:
+            header = f"@{movie}/{unique_id}/ccs"
+    
+    elif sequencer_type == 'pacbio_subread':
+        # Format: @movie/zmw/start_end
+        movie = common_metadata.get('movie', '')
+        header = f"@{movie}/{unique_id}"
+    
+    elif sequencer_type == 'pacbio_clr':
+        # Format: @movie/zmw/start_end
+        movie = common_metadata.get('movie', '')
+        header = f"@{movie}/{unique_id}"
     
     elif sequencer_type == 'ont':
         # unique_id format: read_id:key=value:key=value etc
@@ -252,7 +293,6 @@ def reconstruct_header(unique_id: str, common_metadata: Dict, sequencer_type: st
             # Parse unique_id as read_num:pair_num
             parts = unique_id.split(':')
             if len(parts) >= 2:
-                # FASTR formats SRR kinda like: @SRRXXXXXX.Y Y
                 header = f"@{sra_accession}.{parts[0]} {parts[1]}"
             else:
                 header = f"@{sra_accession}.{unique_id}"
@@ -260,7 +300,7 @@ def reconstruct_header(unique_id: str, common_metadata: Dict, sequencer_type: st
             header = f"@{unique_id}"
     
     if pair_number > 0 and f"/{pair_number}" not in header and f" {pair_number}" not in header:
-        header += f"/{pair_number}" # Add pair number if present and not already in header
+        header += f"/{pair_number}"
     
     return header
 
@@ -284,7 +324,7 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
     # T: 65-127
     for i in range(65, 128):
         reverse_map[i] = ord('T')
-    
+
     # C: 129-191
     for i in range(129, 192):
         reverse_map[i] = ord('C')
@@ -297,54 +337,75 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
 
 def reverse_scaling_to_quality(binary_values: np.ndarray,
                                base_ranges: dict, reverse_map: np.ndarray,
-                               formula_func) -> np.ndarray:
+                               formula_func, max_phred) -> np.ndarray:
     """
     Reverse the scaled quality values from the 63-per-base scheme.
     Returns reconstructed quality scores (0..max_phred).
-
-    Methodology is as follows:
-    Plug in initial equation, f(x), create x/y table within needed domain
-    Flip x/y from this table, creating dictionary values for f^-1(x)
-
-
-    Take uint8 value, and subtract the lower end of its numerical base range
-    Take the remaining value (which now falls within 0-63), and find its respective value within the f^-1(x) dictionary
-    Return base + quality.
-    This program is not the reason for slight losses in information, as depending on the quality scaling equation used, information may be lost due to rounding.
+    
+    Fixed to properly handle different phred alphabets by:
+    1. Creating inverse lookup for ALL possible scaled values (0-62)
+    2. Properly mapping quality scores through the forward formula
+    3. Handling edge cases where formula produces out-of-range values
     """
-
-    # map binary values to bases
+    
+    # Map binary values to bases
     bases = np.array([chr(reverse_map[b]) for b in binary_values])
     
+    max_range = 62  # 0-62 inclusive (63 values per base)
     
-    max_range = 62  # 0-62 inclusive (63 values)
-    max_phred = 94  # I will encode this into the metadata header in sequence_converter.py, but this should work just fine as of now. 
-    
-    # Create all possible quality scores
+    # Create all possible quality scores for the given phred alphabet
     q_possible = np.arange(max_phred + 1, dtype=np.float32)  
     
     # Apply forward formula to get scaled values
     scaled_for_q = formula_func(q_possible).astype(np.float32)
     scaled_for_q = np.nan_to_num(scaled_for_q, nan=0.0, posinf=max_range, neginf=0.0)
-    # Round to ints
-    scaled_int_for_q = np.floor(scaled_for_q + 1e-7).astype(int)
-    # Build inverse lookup table for scaled values 0..max_range
-    inverse_table = -np.ones(max_range + 1, dtype=int)
     
+    # Clip to valid range BEFORE rounding
+    scaled_for_q = np.clip(scaled_for_q, 0, max_range)
+    
+    # Round to integers
+    scaled_int_for_q = np.round(scaled_for_q).astype(int)
+    
+    # Build inverse lookup table for scaled values 0..max_range
+    # Key insight: we want the ORIGINAL quality score for each scaled value
+    inverse_table = np.full(max_range + 1, -1, dtype=int)
+    
+    # For each quality score, store it at its corresponding scaled position
+    # If multiple quality scores map to same scaled value, keep the first one
     for q, s in zip(q_possible, scaled_int_for_q):
         if 0 <= s <= max_range:
-            if inverse_table[s] == -1 or q < inverse_table[s]:
+            if inverse_table[s] == -1:
                 inverse_table[s] = int(q)
     
-    # Fill any gaps in the inverse table
-    last_val = 0
-    for i in range(len(inverse_table)):
-        if inverse_table[i] == -1:
-            inverse_table[i] = last_val
-        else:
-            last_val = inverse_table[i]
+    # Fill gaps in inverse table using interpolation
+    # This handles cases where no quality score maps to a particular scaled value
+    valid_indices = np.where(inverse_table != -1)[0]
+    if len(valid_indices) > 0:
+        # Fill beginning
+        if valid_indices[0] > 0:
+            inverse_table[:valid_indices[0]] = inverse_table[valid_indices[0]]
+        
+        # Fill gaps between valid values
+        for i in range(len(valid_indices) - 1):
+            start_idx = valid_indices[i]
+            end_idx = valid_indices[i + 1]
+            if end_idx - start_idx > 1:
+                # Linear interpolation for gap
+                start_val = inverse_table[start_idx]
+                end_val = inverse_table[end_idx]
+                gap_size = end_idx - start_idx
+                for j in range(1, gap_size):
+                    interpolated = start_val + (end_val - start_val) * j / gap_size
+                    inverse_table[start_idx + j] = int(np.round(interpolated))
+        
+        # Fill end
+        if valid_indices[-1] < max_range:
+            inverse_table[valid_indices[-1] + 1:] = inverse_table[valid_indices[-1]]
+    else:
+        # If no valid mappings found, use default quality of 0
+        inverse_table[:] = 0
     
-    # Calculate y (scaled values 0-62)
+    # Calculate y (scaled values 0-62) by subtracting base minimum
     y = np.zeros_like(binary_values, dtype=np.int32)
     for base, (lo, hi) in base_ranges.items():
         mask = bases == base
@@ -352,12 +413,17 @@ def reverse_scaling_to_quality(binary_values: np.ndarray,
             # Subtract the base's minimum value to get 0-62 range
             y[mask] = binary_values[mask] - lo
     
-    # Ensure y is within range of 0-62
+    # Ensure y is within valid range
     y = np.clip(y, 0, max_range)
-    # Lastly, reconstruct quality scores
-    reconstructed_q = inverse_table[y + 1]
+    
+    # Reconstruct quality scores using inverse lookup
+    reconstructed_q = inverse_table[y]
+    
+    # Ensure output is within valid phred range
+    reconstructed_q = np.clip(reconstructed_q, 0, max_phred)
     
     return reconstructed_q
+
 
 def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> bytes:
     """Convert numeric quality scores to ASCII string"""
@@ -429,7 +495,11 @@ def reconstruct_fastq(input_path: str, output_path: str,
             # Find newline to get sequence length
             seq_end = data.find(b'\n', pos)
             if seq_end == -1:
-                break
+                # Check if there's still data left (last sequence might not have trailing newline)
+                if pos < len(data):
+                    seq_end = len(data)
+                else:
+                    break
             
             # Extract binary sequence data
             seq_data = data[pos:seq_end]
@@ -500,7 +570,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 seq_array,
                 base_ranges,
                 reverse_map,
-                formula_func
+                formula_func,
+                max_phred=phred_alphabet_max
             )
             quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
             
@@ -540,7 +611,8 @@ def main():
     
     # Determine phred alphabet max
     # This may not properly be transferred to our reverse_scaling_quality(), but it is fine for now. 
-    phred_alphabet_max = 41
+    if args.phred_alphabet == "phred42":
+        phred_alphabet_max = 41
     if args.phred_alphabet == "phred63":
         phred_alphabet_max = 62
     elif args.phred_alphabet == "phred94":
