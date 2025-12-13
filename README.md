@@ -158,5 +158,3 @@ python main.py big_genome.fastq output.bin --mode 4 --num_workers 8
 ```
 
 -----
-
-### Would you like me to generate the `requirements.txt` or a sample unit test file for this script?
