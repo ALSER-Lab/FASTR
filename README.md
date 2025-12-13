@@ -22,7 +22,7 @@ Ensure you have Python 3.x installed. The tool relies on `numpy` for efficient a
 
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
-cd FASTR
+cd FASTR/src
 python main.py --help
 ```
 
