@@ -5,7 +5,6 @@ import argparse
 import re
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from functools import lru_cache
 
 @dataclass
 class MetadataBlock:
@@ -15,6 +14,7 @@ class MetadataBlock:
     scaling_equation: str
     start_index: int
     end_index: int
+
 def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Optional[str]]:
     """
     Parse metadata headers from the beginning of the file in order to reconstruct it later
@@ -337,24 +337,34 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
 
 def reverse_scaling_to_quality(binary_values: np.ndarray,
                                base_ranges: dict, reverse_map: np.ndarray,
-                               formula_func, max_phred) -> np.ndarray:
+                               inverse_table: np.ndarray,
+                               max_phred: int) -> np.ndarray:
     """
     Reverse the scaled quality values from the 63-per-base scheme.
     Returns reconstructed quality scores (0..max_phred).
-    
-    Fixed to properly handle different phred alphabets by:
-    1. Creating inverse lookup for ALL possible scaled values (0-62)
-    2. Properly mapping quality scores through the forward formula
-    3. Handling edge cases where formula produces out-of-range values
     """
     
     # Map binary values to bases
-    bases = np.array([chr(reverse_map[b]) for b in binary_values])
+    bases = reverse_map[binary_values]
     
-    max_range = 62  # 0-62 inclusive (63 values per base)
+    # Calculate y (scaled values 0-63) by subtracting base minimum
+    y = np.zeros_like(binary_values, dtype=np.int32)
+    for base_char, (lo, hi) in base_ranges.items():
+        mask = bases == ord(base_char)
+        if np.any(mask):
+            y[mask] = binary_values[mask] - lo
     
-    # Create all possible quality scores for the given phred alphabet
-    q_possible = np.arange(max_phred + 1, dtype=np.float32)  
+    # Clamp y is within valid range
+    # Weirdly enough np.clip clamps, not clips?
+    y = np.clip(y, 0, 63)
+    reconstructed_q = inverse_table[y] # Reconstruct quality scores w/ inverse lookup
+    reconstructed_q = np.clip(reconstructed_q, 0, max_phred)
+    
+    return reconstructed_q
+
+def build_inverse_quality_table(formula_func, max_phred, max_range=63):
+    """Function designed to build the inverse table separately in order to not be looped within reverse_scaling_to_quality"""
+    q_possible = np.arange(max_phred + 1, dtype=np.float32)
     
     # Apply forward formula to get scaled values
     scaled_for_q = formula_func(q_possible).astype(np.float32)
@@ -367,19 +377,16 @@ def reverse_scaling_to_quality(binary_values: np.ndarray,
     scaled_int_for_q = np.round(scaled_for_q).astype(int)
     
     # Build inverse lookup table for scaled values 0..max_range
-    # Key insight: we want the ORIGINAL quality score for each scaled value
     inverse_table = np.full(max_range + 1, -1, dtype=int)
     
     # For each quality score, store it at its corresponding scaled position
-    # If multiple quality scores map to same scaled value, keep the first one
     for q, s in zip(q_possible, scaled_int_for_q):
         if 0 <= s <= max_range:
-            if inverse_table[s] == -1:
-                inverse_table[s] = int(q)
+            inverse_table[s] = int(q)
     
     # Fill gaps in inverse table using interpolation
-    # This handles cases where no quality score maps to a particular scaled value
     valid_indices = np.where(inverse_table != -1)[0]
+    
     if len(valid_indices) > 0:
         # Fill beginning
         if valid_indices[0] > 0:
@@ -390,7 +397,6 @@ def reverse_scaling_to_quality(binary_values: np.ndarray,
             start_idx = valid_indices[i]
             end_idx = valid_indices[i + 1]
             if end_idx - start_idx > 1:
-                # Linear interpolation for gap
                 start_val = inverse_table[start_idx]
                 end_val = inverse_table[end_idx]
                 gap_size = end_idx - start_idx
@@ -405,37 +411,20 @@ def reverse_scaling_to_quality(binary_values: np.ndarray,
         # If no valid mappings found, use default quality of 0
         inverse_table[:] = 0
     
-    # Calculate y (scaled values 0-62) by subtracting base minimum
-    y = np.zeros_like(binary_values, dtype=np.int32)
-    for base, (lo, hi) in base_ranges.items():
-        mask = bases == base
-        if np.any(mask):
-            # Subtract the base's minimum value to get 0-62 range
-            y[mask] = binary_values[mask] - lo
-    
-    # Ensure y is within valid range
-    y = np.clip(y, 0, max_range)
-    
-    # Reconstruct quality scores using inverse lookup
-    reconstructed_q = inverse_table[y]
-    
-    # Ensure output is within valid phred range
-    reconstructed_q = np.clip(reconstructed_q, 0, max_phred)
-    
-    return reconstructed_q
-
+    return inverse_table
 
 def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> bytes:
     """Convert numeric quality scores to ASCII string"""
     return bytes((quality_scores + phred_offset).astype(np.uint8))
+
 
 def reconstruct_fastq(input_path: str, output_path: str, 
                      gray_N: int = 1, gray_A: int = 63, gray_T: int = 127,
                      gray_C: int = 191, gray_G: int = 255, phred_alphabet_max: int = 41,
                      phred_offset: int = 33):
     """
-    Reconstruct FASTQ file from binary compressed format (mode 3).
-    Assumes binary writing was used (--binary_write 1).
+    Reconstruct FASTQ file from FASTR (mode 3).
+    Assumes binary writing was used in sequence_converter (--binary_write 1).
     """
     print(f"Reading compressed binary file: {input_path}")
     
@@ -460,17 +449,38 @@ def reconstruct_fastq(input_path: str, output_path: str,
     
     # Create reverse base mapping
     reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
+    
+    # Pre-compute inverse quality tables for each metadata block
+    inverse_tables = []
+    for mb in metadata_blocks:
+        formula_func = build_formula_func(mb.scaling_equation)
+        inverse_table = build_inverse_quality_table(formula_func, phred_alphabet_max)
+        inverse_tables.append(inverse_table)
+    
+    # Base ranges for quality decoding
+    base_ranges = {
+        'A': (1, 63),
+        'T': (65, 127),
+        'C': (129, 191),
+        'G': (193, 255),
+        'N': (1, 1)
+    }
+    
     # Process binary sequence data
     print(f"Reconstructing FASTQ from byte {data_start_byte}...")
     
     sequence_count = 0
     current_metadata_idx = 0
     current_metadata = metadata_blocks[0]
+    current_inverse_table = inverse_tables[0]
+    
     # Calculate 10% milestones based on file size
     data_size = file_size - data_start_byte
     milestone_interval = data_size // 10
     next_milestone = milestone_interval
     last_reported_percent = 0
+    output_buffer = []
+    buffer_size = 10000
     
     # Start reading from after metadata
     pos = data_start_byte
@@ -509,6 +519,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 next_metadata = metadata_blocks[current_metadata_idx + 1]
                 if sequence_count >= next_metadata.start_index:
                     current_metadata = next_metadata
+                    current_inverse_table = inverse_tables[current_metadata_idx + 1]
                     current_metadata_idx += 1
                     print(f"Switched to metadata block {current_metadata_idx + 1}")
             
@@ -556,33 +567,31 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 else:
                     header = f"@seq_{sequence_count}"
             
-            formula_func = build_formula_func(current_metadata.scaling_equation)
-            # Apply reverse scaling using the callable
-            base_ranges = {
-                'A': (1, 63),
-                'T': (65, 127),
-                'C': (129, 191),
-                'G': (193, 255),
-                'N': (1, 1)
-            }
-
+            # Apply reverse scaling using pre-computed inverse table
             quality_scores = reverse_scaling_to_quality(
                 seq_array,
                 base_ranges,
                 reverse_map,
-                formula_func,
+                current_inverse_table,
                 max_phred=phred_alphabet_max
             )
             quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
             
-            # Write FASTQ record
-            outfile.write(f"{header}\n")
-            outfile.write(f"{bases}\n")
-            outfile.write("+\n") # In some SRA formats they rewrite the header on this line. This might be done, but I'l simply write a '+' for now
-            outfile.write(f"{quality_string}\n")
+            # Add to output buffer
+            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+            
+            # Write buffer when it reaches threshold
+            if len(output_buffer) >= buffer_size:
+                outfile.write(''.join(output_buffer))
+                output_buffer.clear()
+            
             sequence_count += 1
             # Move to next sequence
             pos = seq_end + 1
+        
+        # Write any remaining buffered output
+        if output_buffer:
+            outfile.write(''.join(output_buffer))
     
     print(f"Progress: 100% complete")
     print(f"\nTotal sequences reconstructed: {sequence_count:,}")
