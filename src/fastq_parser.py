@@ -117,7 +117,8 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                 header=header,
                 sequence=seq_arrays[idx],
                 quality=qual_vals,
-                pair_number=pair_number
+                pair_number=pair_number,
+                quality_string=qual_data_list[idx] if keep_quality else b''
             )
             records.append(record)
     
