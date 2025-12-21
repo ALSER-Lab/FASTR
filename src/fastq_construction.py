@@ -5,6 +5,8 @@ import argparse
 import re
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+from multiprocessing import Pool
+from functools import partial
 
 @dataclass
 class MetadataBlock:
@@ -22,11 +24,26 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
     metadata_blocks = []
     sra_accession = None
     
-    first_seq_marker = data.find(b'<') # Find where actual sequence data starts (which is marked by a '<')
+    first_seq_marker = data.find(b'<')
     if first_seq_marker == -1:
         return metadata_blocks, 0, sra_accession
     
-    header_section = data[:first_seq_marker].decode('utf-8', errors='ignore') # Extract ONLY the header section before the first '<'
+    # Find the @ before the first < (where sequence actually starts)
+    search_start = max(0, first_seq_marker - 1000)  # Look back up to 1000 bytes
+    header_before_seq = data[search_start:first_seq_marker]
+    last_at = header_before_seq.rfind(b'\n@')
+    
+    if last_at != -1:
+        # Found a header, sequence data starts there
+        actual_data_start = search_start + last_at + 1  # +1 to skip the \n
+    else:
+        # No header found, might be at the very start
+        if data[0:1] == b'@':
+            actual_data_start = 0
+        else:
+            actual_data_start = first_seq_marker
+    
+    header_section = data[:actual_data_start].decode('utf-8', errors='ignore')
     lines = [line.strip() for line in header_section.split('\n') if line.strip()]
     
     print(f"Parsed {len(lines)} header lines (before first '<')")
@@ -119,22 +136,10 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
         else:
             line_idx += 1 # Skip any other lines
     
-    if not metadata_blocks:
-        print("WARNING: No metadata blocks found, using defaults") 
-        # Create a default block if none found
-        metadata_blocks.append(MetadataBlock(
-            common_metadata={'prefix': sra_accession.split('.')[0][:3] if sra_accession else '', 
-                           'accession': sra_accession.split('.')[0][3:] if sra_accession else ''} if sra_accession else {},
-            sequencer_type='srr' if sra_accession else 'none',
-            scaling_equation='x',
-            start_index=0,
-            end_index=-1
-        ))
-    
-    return metadata_blocks, first_seq_marker, sra_accession
+    return metadata_blocks, actual_data_start, sra_accession
 
 def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray:
-    # Just copy-pasted from sequence_converter.py
+    # Just copy-pasted from quality_processing.py 
     """
     Parse and evaluate a custom mathematical formula.
     Supports: +, -, *, /, **, (), ln(), log(), log10(), exp(), sqrt(), abs(), min(), max()
@@ -318,11 +323,11 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
     
     # When we have quality-scaled values, we need to map them to their initial base range
     # A: 1-63
-    for i in range(1, 64):
+    for i in range(1, 63):
         reverse_map[i] = ord('A')
     
     # T: 65-127
-    for i in range(65, 128):
+    for i in range(65, 127):
         reverse_map[i] = ord('T')
 
     # C: 129-191
@@ -330,7 +335,7 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
         reverse_map[i] = ord('C')
     
     # G: 193-255
-    for i in range(193, 256):
+    for i in range(193, 255):
         reverse_map[i] = ord('G')
     
     return reverse_map
@@ -369,14 +374,8 @@ def build_inverse_quality_table(formula_func, max_phred, max_range=63):
     # Apply forward formula to get scaled values
     scaled_for_q = formula_func(q_possible).astype(np.float32)
     scaled_for_q = np.nan_to_num(scaled_for_q, nan=0.0, posinf=max_range, neginf=0.0)
-    
-    # Clip to valid range BEFORE rounding
-    scaled_for_q = np.clip(scaled_for_q, 0, max_range)
-    
-    # Round to integers
-    scaled_int_for_q = np.round(scaled_for_q).astype(int)
-    
-    # Build inverse lookup table for scaled values 0..max_range
+    scaled_for_q = np.clip(scaled_for_q, 0, max_range) # Clamp
+    scaled_int_for_q = np.round(scaled_for_q).astype(int)  # Round to uint8
     inverse_table = np.full(max_range + 1, -1, dtype=int)
     
     # For each quality score, store it at its corresponding scaled position
@@ -384,8 +383,7 @@ def build_inverse_quality_table(formula_func, max_phred, max_range=63):
         if 0 <= s <= max_range:
             inverse_table[s] = int(q)
     
-    # Fill gaps in inverse table using interpolation
-    valid_indices = np.where(inverse_table != -1)[0]
+    valid_indices = np.where(inverse_table != -1)[0] # Fill gaps in inverse table 
     
     if len(valid_indices) > 0:
         # Fill beginning
@@ -418,23 +416,166 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
     return bytes((quality_scores + phred_offset).astype(np.uint8))
 
 
+def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges, 
+                                       metadata_blocks, inverse_tables, 
+                                       phred_alphabet_max, phred_offset, sra_accession):
+    """
+    Worker function that processes a single chunk of binary sequence data in parallel.
+    We use same streaming + multiprocessing approach as in our to_fastr converison methodology (can be more specifically found in chunk_processor.py)
+    (chunk_id, reconstructed_fastq_text, sequence_count)
+    """
+    try:
+        chunk_id, chunk_binary, start_seq_idx = chunk_data
+        print(f"Worker processing chunk {chunk_id} starting at sequence {start_seq_idx}")
+        
+        output_buffer = []
+        sequence_count = start_seq_idx
+        pos = 0
+        
+        # Determine which metadata block to use for this chunk
+        # (for files with multiple flowcells, different ranges use different metadata)
+        current_metadata_idx = 0
+        for i, mb in enumerate(metadata_blocks):
+            if mb.end_index == -1 or sequence_count <= mb.end_index:
+                current_metadata_idx = i
+                break
+        
+        current_metadata = metadata_blocks[current_metadata_idx]
+        current_inverse_table = inverse_tables[current_metadata_idx]
+        
+        # Process all sequences in this chunk
+        while pos < len(chunk_binary):
+            # Find sequence start marker '<'
+            if chunk_binary[pos:pos+1] != b'<':
+                pos += 1
+                continue
+            
+            pos += 1  # Skip <
+            
+            # Find newline to determine sequence length
+            seq_end = chunk_binary.find(b'\n', pos)
+            if seq_end == -1:
+                if pos < len(chunk_binary):
+                    seq_end = len(chunk_binary)
+                else:
+                    break
+            
+            # Extract binary sequence data
+            seq_data = chunk_binary[pos:seq_end]
+            
+            # Check if we need to switch metadata blocks (for multiple flowcells)
+            if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                next_metadata = metadata_blocks[current_metadata_idx + 1]
+                if sequence_count >= next_metadata.start_index:
+                    current_metadata = next_metadata
+                    current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                    current_metadata_idx += 1
+            
+            # Convert binary values back to bases
+            seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+            bases_array = reverse_map[seq_array]
+            bases = bases_array.tobytes().decode('ascii')
+            
+            # Try to find header before this sequence by searching backwards
+            header_search_start = max(0, pos - 500)
+            header_section = chunk_binary[header_search_start:pos]
+
+            unique_id = None
+            pair_number = 0
+
+            # Find last '@' before '<' (the header for this sequence)
+            last_at = header_section.rfind(b'@')
+            if last_at != -1:
+                header_line_start = header_search_start + last_at
+                header_line_end = chunk_binary.find(b'\n', header_line_start)
+                if header_line_end != -1 and header_line_end <= pos:
+                    header_content = chunk_binary[header_line_start+1:header_line_end].decode('utf-8', errors='ignore').strip()
+                    
+                    # Check for pair number suffix (for paired-end reads)
+                    if '/' in header_content:
+                        parts = header_content.rsplit('/', 1)
+                        unique_id = parts[0]
+                        try:
+                            pair_number = int(parts[1])
+                        except:
+                            unique_id = header_content
+                    else:
+                        unique_id = header_content
+
+            # A bug I ran into when implementing multiprocessing was the first sequence header being improperly reconstructed (normally as "seq_0")
+            # A duct-tape-esque fix right now is that if we're very near the start and haven't found a header yet, search from beginning
+            elif pos <= 510 and chunk_binary[:pos].count(b'<') == 1:
+                first_at = chunk_binary.find(b'@')
+                if first_at != -1 and first_at < pos:
+                    header_line_end = chunk_binary.find(b'\n', first_at)
+                    print(f"DEBUG: header_line_end = {header_line_end}")
+                    if header_line_end != -1 and header_line_end < pos:
+                        header_content = chunk_binary[first_at+1:header_line_end].decode('utf-8', errors='ignore').strip()
+                        
+                        # Check for pair number
+                        if '/' in header_content:
+                            parts = header_content.rsplit('/', 1)
+                            unique_id = parts[0]
+                            try:
+                                pair_number = int(parts[1])
+                            except:
+                                unique_id = header_content
+                        else:
+                            unique_id = header_content
+            
+            # Reconstruct full header from compressed unique id
+            if unique_id:
+                header = reconstruct_header(unique_id, current_metadata.common_metadata,
+                                          current_metadata.sequencer_type, pair_number, sra_accession)
+            else:
+                # Fallback is togenerate generic header if we couldn't find the compressed one
+                if sra_accession:
+                    header = f"@{sra_accession}.{sequence_count}"
+                else:
+                    header = f"@seq_{sequence_count}"
+            
+            # Apply reverse scaling to reconstruct original quality scores
+            quality_scores = reverse_scaling_to_quality(
+                seq_array,
+                base_ranges,
+                reverse_map,
+                current_inverse_table,
+                max_phred=phred_alphabet_max
+            )
+            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+            
+            # Add complete FASTQ record to output buffer
+            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+            
+            sequence_count += 1
+            pos = seq_end + 1
+        
+        print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
+        return (chunk_id, ''.join(output_buffer), sequence_count - start_seq_idx)
+    
+    except Exception as e:
+        print(f"ERROR in worker processing chunk {chunk_id}: {e}")
+        raise
+
 def reconstruct_fastq(input_path: str, output_path: str, 
                      gray_N: int = 1, gray_A: int = 63, gray_T: int = 127,
                      gray_C: int = 191, gray_G: int = 255, phred_alphabet_max: int = 41,
-                     phred_offset: int = 33):
+                     phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4):
     """
-    Reconstruct FASTQ file from FASTR (mode 3).
+    Reconstruct FASTQ file from FASTR (mode 3) using parallel processing.
     Assumes binary writing was used in sequence_converter (--binary_write 1).
     """
-    print(f"Reading compressed binary file: {input_path}")
+    print(f"Reading FASTR: {input_path}")
     
-    # Read entire file as binary (this can vary, and I will add auto-detection to sequence_converter.py to determine if its written in binary/ints),
-    # But binary is what we will be testing with (as it is more important, and more likely to be used)
+    # Read entire file as binary
     with open(input_path, 'rb') as f:
         data = f.read()
     file_size = len(data)
     print(f"File size: {file_size:,} bytes ({file_size / (1024**2):.2f} MB)")
-    metadata_blocks, data_start_byte, sra_accession = parse_metadata_header(data) # Parse metadata from text header
+    print(f"Using {num_workers} worker processes for parallel reconstruction")
+    
+    # Parse metadata headers from the beginning of the file
+    metadata_blocks, data_start_byte, sra_accession = parse_metadata_header(data)
     
     if not metadata_blocks:
         print("ERROR: No metadata found?")
@@ -447,17 +588,17 @@ def reconstruct_fastq(input_path: str, output_path: str,
     for i, mb in enumerate(metadata_blocks):
         print(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
     
-    # Create reverse base mapping
+    # Create reverse base mapping (binary values:ASCII bases)
     reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
     
-    # Pre-compute inverse quality tables for each metadata block
+    # Pre-compute inverse quality tables for each metadata block (making it easier to reverse)
     inverse_tables = []
     for mb in metadata_blocks:
         formula_func = build_formula_func(mb.scaling_equation)
         inverse_table = build_inverse_quality_table(formula_func, phred_alphabet_max)
         inverse_tables.append(inverse_table)
     
-    # Base ranges for quality decoding
+    # Base ranges for quality decoding (each base has a 63-value range)
     base_ranges = {
         'A': (1, 63),
         'T': (65, 127),
@@ -466,137 +607,86 @@ def reconstruct_fastq(input_path: str, output_path: str,
         'N': (1, 1)
     }
     
-    # Process binary sequence data
-    print(f"Reconstructing FASTQ from byte {data_start_byte}...")
+    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+    print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
-    sequence_count = 0
-    current_metadata_idx = 0
-    current_metadata = metadata_blocks[0]
-    current_inverse_table = inverse_tables[0]
-    
-    # Calculate 10% milestones based on file size
-    data_size = file_size - data_start_byte
-    milestone_interval = data_size // 10
-    next_milestone = milestone_interval
-    last_reported_percent = 0
-    output_buffer = []
-    buffer_size = 10000
-    
-    # Start reading from after metadata
-    pos = data_start_byte
-    with open(output_path, 'w') as outfile:
-        while pos < len(data):
-            # Check for 10% progress milestones
-            bytes_processed = pos - data_start_byte
-            if milestone_interval > 0 and bytes_processed >= next_milestone:
-                percent_complete = int((bytes_processed / data_size) * 100)
-                if percent_complete > last_reported_percent:
-                    print(f"Progress: {percent_complete}% complete ({sequence_count:,} sequences)")
-                    last_reported_percent = percent_complete
-                next_milestone += milestone_interval
-            
-            # Find sequence start marker, which is denoted by a '<'
-            if data[pos:pos+1] != b'<':
-                pos += 1
-                continue
-            
-            pos += 1  # Skip '<'
-            
-            # Find newline to get sequence length
-            seq_end = data.find(b'\n', pos)
-            if seq_end == -1:
-                # Check if there's still data left (last sequence might not have trailing newline)
-                if pos < len(data):
-                    seq_end = len(data)
-                else:
-                    break
-            
-            # Extract binary sequence data
-            seq_data = data[pos:seq_end]
-            
-            # Check if we need to switch metadata blocks (different flowcells will be given different metadata blocks, though this is likely to be subject to change)
-            if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                next_metadata = metadata_blocks[current_metadata_idx + 1]
-                if sequence_count >= next_metadata.start_index:
-                    current_metadata = next_metadata
-                    current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                    current_metadata_idx += 1
-                    print(f"Switched to metadata block {current_metadata_idx + 1}")
-            
-            # Convert binary values to bases
-            seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-            bases_array = reverse_map[seq_array]
-            bases = bases_array.tobytes().decode('ascii')
-            
-            # Try to find header before this sequence
-            # Look backwards for '@' followed by text and newline
-            header_search_start = max(0, pos - 500)  # Search up to 500 bytes back
-            header_section = data[header_search_start:pos-1]
-            
-            unique_id = None
-            pair_number = 0
-            
-            # Find last '@' before '<'
-            last_at = header_section.rfind(b'@')
-            if last_at != -1:
-                # Extract potential header
-                header_line_start = header_search_start + last_at
-                header_line_end = data.find(b'\n', header_line_start)
-                if header_line_end != -1 and header_line_end < pos:
-                    header_content = data[header_line_start+1:header_line_end].decode('utf-8', errors='ignore').strip()
-                    
-                    # Check for pair number
-                    if '/' in header_content:
-                        parts = header_content.rsplit('/', 1)
-                        unique_id = parts[0]
-                        try:
-                            pair_number = int(parts[1])
-                        except:
-                            unique_id = header_content
-                    else:
-                        unique_id = header_content
-            
-            # Reconstruct header
-            if unique_id:
-                header = reconstruct_header(unique_id, current_metadata.common_metadata,
-                                            current_metadata.sequencer_type, pair_number, sra_accession)
-            else:
-                # Fallback header with SRA accession if available
-                if sra_accession:
-                    header = f"@{sra_accession}.{sequence_count}"
-                else:
-                    header = f"@seq_{sequence_count}"
-            
-            # Apply reverse scaling using pre-computed inverse table
-            quality_scores = reverse_scaling_to_quality(
-                seq_array,
-                base_ranges,
-                reverse_map,
-                current_inverse_table,
-                max_phred=phred_alphabet_max
-            )
-            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-            
-            # Add to output buffer
-            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
-            
-            # Write buffer when it reaches threshold
-            if len(output_buffer) >= buffer_size:
-                outfile.write(''.join(output_buffer))
-                output_buffer.clear()
-            
-            sequence_count += 1
-            # Move to next sequence
-            pos = seq_end + 1
+    # Generator function to yield chunks from binary data
+    def chunk_generator():
+        buffer = data[data_start_byte:]
+        chunk_id = 0
+        start_seq_idx = 0
+        pos = 0
         
-        # Write any remaining buffered output
-        if output_buffer:
-            outfile.write(''.join(output_buffer))
+        while pos < len(buffer):
+            chunk_end = min(pos + chunk_size_bytes, len(buffer))
+            
+            # Find last complete sequence boundary (look for < followed by content and newline)
+            # We want to split on sequence boundaries to avoid cutting sequences in half
+            search_start = max(pos, chunk_end - 1000)
+            last_marker = buffer.rfind(b'<', search_start, chunk_end)
+            
+            if last_marker != -1 and last_marker > pos:
+                # Find the newline after this sequence to get the complete sequence
+                seq_end = buffer.find(b'\n', last_marker)
+                if seq_end != -1 and seq_end < len(buffer):
+                    chunk_end = seq_end + 1
+            
+            # Include overlap from before the chunk to capture headers
+            # We do this because headers are stored before their sequences, 
+            # so we need to look back to check whether each chunk contains the headers for all its sequences
+            overlap_start = max(0, pos - 500)
+            chunk_binary = buffer[overlap_start:chunk_end]
+            
+            if chunk_binary:
+                # Estimate sequences in this chunk for tracking purposes
+                # Only count sequences in the NEW data (not the overlap) to avoid double counting
+                actual_start_in_chunk = pos - overlap_start
+                estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'<')
+                
+                yield (chunk_id, chunk_binary, start_seq_idx)
+                
+                start_seq_idx += estimated_seqs
+                chunk_id += 1
+                
+                if chunk_id % 10 == 0:
+                    print(f"Read {chunk_id} chunks...")
+            
+            pos = chunk_end
+            
+            if pos >= len(buffer):
+                break
     
-    print(f"Progress: 100% complete")
-    print(f"\nTotal sequences reconstructed: {sequence_count:,}")
+    print("Reconstructing FASTQ with parallel processing...")
+    total_sequences = 0
+    
+    with open(output_path, 'w', buffering=chunk_size_bytes) as outfile:
+        # Create worker pool and process chunks as they come in
+        with Pool(processes=num_workers) as pool:
+            # Create partial function with fixed arguments
+            worker_func = partial(
+                process_chunk_worker_reconstruction,
+                reverse_map=reverse_map,
+                base_ranges=base_ranges,
+                metadata_blocks=metadata_blocks,
+                inverse_tables=inverse_tables,
+                phred_alphabet_max=phred_alphabet_max,
+                phred_offset=phred_offset,
+                sra_accession=sra_accession
+            )
+            
+            # Use imap to process chunks as they're read (streaming), like how it is done in to_fastr.py
+            # chunksize=1 makes order preserved for sequential writing
+            for chunk_id, fastq_text, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
+                # Write immediately as each chunk completes
+                outfile.write(fastq_text)
+                
+                total_sequences += count
+                
+                if total_sequences % 100000 == 0:
+                    print(f"Reconstructed {total_sequences:,} sequences...")
+    
+    print(f"\nTotal sequences reconstructed: {total_sequences:,}")
     print(f"Output saved to: {output_path}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="Reconstruct FASTQ files from compressed binary format (mode 3)")
@@ -615,6 +705,12 @@ def main():
     parser.add_argument("--gray_T", type=int, default=127)
     parser.add_argument("--gray_C", type=int, default=191)
     parser.add_argument("--gray_G", type=int, default=255)
+    
+    # Multiprocessing arguments
+    parser.add_argument("--chunk_size_mb", type=int, default=32,
+                        help="Chunk size in MB for parallel processing (default: 32)")
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="Number of parallel workers (default: 4, use 4+ for large files)")
     
     args = parser.parse_args()
     
@@ -635,7 +731,9 @@ def main():
         gray_T=args.gray_T, gray_C=args.gray_C,
         gray_G=args.gray_G,
         phred_alphabet_max=phred_alphabet_max,
-        phred_offset=args.phred_offset
+        phred_offset=args.phred_offset,
+        chunk_size_mb=args.chunk_size_mb,
+        num_workers=args.num_workers
     )
     
     end_time = time.perf_counter()
