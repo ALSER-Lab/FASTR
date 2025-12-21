@@ -176,196 +176,190 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     
     print(f"Total sequences written: {total_sequences:,}")
 
-
 def main():
-    argument_parser = argparse.ArgumentParser(description="Convert and compress FASTQ/FASTA files to scalar format")
-    argument_parser.add_argument("input_path", type=str, help="Path of .fasta or .fastq file")
-    argument_parser.add_argument("output_path", type=str, help="Output file path")
+    parser = argparse.ArgumentParser(description="Convert and compress FASTQ/FASTA files to scalar format")
+    
+    # Input/output options
+    parser.add_argument("input_path", type=str, 
+                        help="Path of .fasta or .fastq file")
+    parser.add_argument("output_path", type=str, 
+                        help="Output file path")
+    parser.add_argument("--sra_acc", type=str, default=None,
+                        help="SRA accession number (e.g., SRR12345678) [null]")
+    parser.add_argument("--paired", type=int, default=0,
+                        help="Paired-end reads flag (0/1) [0]")
+    parser.add_argument("--paired_mode", type=str, choices=['same_file', 'separate_files'], default='same_file',
+                        help="Output mode for paired-end reads [same_file]")
+    
+    # Quality options
+    parser.add_argument("--extract_qual", type=int, default=1,
+                        help="For FASTQ: extract quality scores (0/1) [1]")
+    parser.add_argument("--phred_off", type=int, default=33,
+                        help="Phred quality offset [33]")
+    parser.add_argument("--phred_alpha", type=str, default='phred42',
+                        help="Phred quality (q-score) ascii character alphabet used by input [phred42]")
+    parser.add_argument("--min_qual", type=int, default=0,
+                        help="Minimum quality score threshold [0]")
+    parser.add_argument("--qual_scale", type=str, choices=['log', 'log_reverse', 'log_custom', 'custom'], default='none',
+                        help="Quality scaling method [none]")
+    parser.add_argument("--custom_formula", type=str, default=None,
+                        help="Custom formula for quality scaling (use 'x' for quality score). "
+                             "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
+    parser.add_argument("--log_a", type=int, default=0,
+                        help="Tunable a value for application in custom log function [0]")
+    
+    # Header compression options
+    parser.add_argument("--compress_hdr", type=int, default=0,
+                        help="Compress FASTQ headers on-the-fly (0/1) [0]")
+    parser.add_argument("--seq_type", type=str,
+                        choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr'],
+                        default='none',
+                        help="Sequencer type for header compression [none]")
+    parser.add_argument("--multi_flow", type=int, default=0,
+                        help="Enable multiple flowcell detection and tracking (0/1) [0]")
+    parser.add_argument("--rm_repeat_hdr", type=int, default=0,
+                        help="Remove repeating metadata from headers, store only at top (0/1) [0]")
+    
+    # Output format options
+    parser.add_argument("--mode", type=int,
+                        help="Output mode: "
+                        "0: Header compression only; "
+                        "1: Base conversion into numbers only; "
+                        "2: Header and base conversion, written out in two lines; "
+                        "3: Repeating header removal entirely, base conversion kept, written out in one line")
+    parser.add_argument("--bin_write", type=int, default=1,
+                        help="Enable binary writing of sequence integers (0/1) [1]")
+    parser.add_argument("--keep_bases", type=int, default=0,
+                        help="Return textual bases without scaling or one-hot encoding (0/1) [0]")
+    parser.add_argument("--keep_qual", type=int, default=0,
+                        help="Keep original quality scores in output (0/1) [0]")
+    parser.add_argument("--bin_bases", type=int, default=0,
+                        help="Use binary encoding for STRING BASES (0/1) [0]")
+    parser.add_argument("--bin_qual", type=int, default=0,
+                        help="Write quality scores as binary numeric values (0/1) [0]")
+    
+    # Base mapping options
+    parser.add_argument("--gray_N", type=int, default=1,
+                        help="Grayscale value for N [1]")
+    parser.add_argument("--gray_A", type=int, default=63,
+                        help="Grayscale value for A [63]")
+    parser.add_argument("--gray_T", type=int, default=127,
+                        help="Grayscale value for T [127]")
+    parser.add_argument("--gray_C", type=int, default=191,
+                        help="Grayscale value for C [191]")
+    parser.add_argument("--gray_G", type=int, default=255,
+                        help="Grayscale value for G [255]")
+    
+    # Performance options
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel workers (use 4+ for large files >5GB) [1]")
+    parser.add_argument("--chunk_mb", type=int, default=32,
+                        help="Chunk size in MB for parallel processing [32]")
+    parser.add_argument("--profile", type=int, default=0,
+                        help="Enable profiling (0/1) [0]")
 
-    argument_parser.add_argument("--quality_scaling", type=str,
-                                 choices=['log', 'log_reverse', 'log_custom', 'custom'],
-                                 default='none',
-                                 help="Quality scaling method (default: none)")
-
-    # Quick mode implementation
-    argument_parser.add_argument("--mode", type=int,
-                            help="What mode to use when writing out converted values. "
-                            "1: Header compression only "
-                            "2: Base conversion into numbers only "
-                            "3: Header and base conversion, written out in two lines "
-                            "4: Repeating header removal entirely, base conversion kept, written out in one line")
-    
-    # Paired-end args
-    argument_parser.add_argument("--paired_end", type=int, default=0,
-                                help="Signifies if the input file contains paired-end reads (0/1, default 0)")
-    argument_parser.add_argument("--paired_end_mode", type=str,
-                                 choices=['same_file', 'separate_files'],
-                                 default='same_file',
-                                 help="Output mode for paired-end reads (default: same_file)")
-    
-    # SRA accession
-    argument_parser.add_argument("--sra_accession", type=str, default=None,
-                                help="SRA accession number (e.g., SRR12345678)")
-    
-    # Header compression arguments
-    argument_parser.add_argument("--compress_headers", type=int, default=0,
-                                help="Compress FASTQ headers on-the-fly (0/1, default 0)")
-    argument_parser.add_argument("--sequencer_type", type=str,
-                                choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr'],
-                                default='none',
-                                help="Sequencer type for header compression (default: none)")
-    argument_parser.add_argument("--multiple_flowcells", type=int, default=0,
-                                help="Enable multiple flowcell detection and tracking (0/1, default 0)")
-    
-    # Quality arguments
-    argument_parser.add_argument("--extract_quality", type=int, default=1,
-                                help="For FASTQ: extract quality scores (0/1, default 1)")
-    argument_parser.add_argument("--phred_offset", type=int, default=33,
-                                help="Phred quality offset (default 33)")
-    argument_parser.add_argument("--min_quality", type=int, default=0,
-                                help="Minimum quality score threshold (default 0)")
-    argument_parser.add_argument("--custom_formula", type=str, default=None,
-                                help="Custom formula for quality scaling (use 'x' for quality score). "
-                                     "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
-    argument_parser.add_argument("--log_a", type=int, default=0,
-                                help="Tunable a value for application in custom log function (default 0)")
-    
-    # Output format
-    argument_parser.add_argument("--binary_write", type=int, default=1,
-                                help="Enable binary writing of sequence integers (0/1, default 1)")
-    argument_parser.add_argument("--keep_bases", type=int, default=0,
-                                help="Return textual bases without scaling or one-hot encoding (0/1, default 0)")
-    argument_parser.add_argument("--keep_quality", type=int, default=0,
-                            help="Keep original quality scores in output (0/1, default 0)")
-    argument_parser.add_argument("--binary_bases", type=int, default=0,
-                            help="Use binary encoding for STRING BASES (0/1, default 0)")
-    argument_parser.add_argument("--binary_quality", type=int, default=0,
-                            help="Write quality scores as binary numeric values (0/1, default 0)")
-    
-    argument_parser.add_argument("--remove_repeating_header", type=int, default=0,
-                            help="Remove repeating metadata from headers, store only at top (0/1, default 0)")
-    argument_parser.add_argument("--phred_alphabet", type=str, default='phred42',
-                            help="Phred quality (q-score) ascii character alphabet used by the input fastq")
-
-    # Base mapping
-    argument_parser.add_argument("--gray_N", type=int, default=1, help="Grayscale value for N (default 1)")
-    argument_parser.add_argument("--gray_A", type=int, default=63, help="Grayscale value for A (default 63)")
-    argument_parser.add_argument("--gray_T", type=int, default=127, help="Grayscale value for T (default 127)")
-    argument_parser.add_argument("--gray_C", type=int, default=191, help="Grayscale value for C (default 191)")
-    argument_parser.add_argument("--gray_G", type=int, default=255, help="Grayscale value for G (default 255)")
-    
-    # Profiling
-    argument_parser.add_argument("--profile", type=int, default=0,
-                                help="Enable profiling (0/1, default 0)")
-    
-    # Multiprocessing
-    argument_parser.add_argument("--num_workers", type=int, default=1,
-                                help="Number of parallel workers (default: 1, use 4+ for large files >5GB)")
-    
-    argument_parser.add_argument("--chunk_size_mb", type=int, default=32,
-                                help="Chunk size in MB for parallel processing (default: 32)")
-
-    user_arguments = argument_parser.parse_args()
+    args = parser.parse_args()
     
     # Validation
-    if user_arguments.keep_bases == 1 and user_arguments.binary_bases == 1:
-        print("ERROR: Cannot use both --keep_bases and --binary_bases. Choose one:")
+    if args.keep_bases == 1 and args.bin_bases == 1:
+        print("ERROR: Cannot use both --keep_bases and --bin_bases. Choose one:")
         print("  --keep_bases 1: Keep ASCII letters (A=65, T=84, etc.)")
-        print("  --binary_bases 1: Convert to compact encoding (A=0, T=1, etc.)")
+        print("  --bin_bases 1: Convert to compact encoding (A=0, T=1, etc.)")
         exit(1)
     
-    if user_arguments.quality_scaling == 'custom' and user_arguments.custom_formula is None:
-        print("ERROR: --quality_scaling custom requires --custom_formula argument")
+    if args.qual_scale == 'custom' and args.custom_formula is None:
+        print("ERROR: --qual_scale custom requires --custom_formula argument")
         print("\nExample usage:")
-        print("  --quality_scaling custom --custom_formula '1 + 62 * (x - 40) / 53'")
-        print("  --quality_scaling custom --custom_formula 'ln(x - 39) / ln(54) * 62 + 1'")
+        print("  --qual_scale custom --custom_formula '1 + 62 * (x - 40) / 53'")
+        print("  --qual_scale custom --custom_formula 'ln(x - 39) / ln(54) * 62 + 1'")
         exit(1)
     
-    if user_arguments.multiple_flowcells == 1 and user_arguments.compress_headers == 0:
-        print("WARNING: --multiple_flowcells requires --compress_headers 1 to function")
+    if args.multi_flow == 1 and args.compress_hdr == 0:
+        print("WARNING: --multi_flow requires --compress_hdr 1 to function")
         print("Enabling header compression automatically...")
-        user_arguments.compress_headers = 1
+        args.compress_hdr = 1
     
-    if user_arguments.remove_repeating_header == 1 and user_arguments.compress_headers == 0:
-        print("WARNING: --remove_repeating_header requires --compress_headers 1 to function")
+    if args.rm_repeat_hdr == 1 and args.compress_hdr == 0:
+        print("WARNING: --rm_repeat_hdr requires --compress_hdr 1 to function")
         print("Enabling header compression automatically...")
-        user_arguments.compress_headers = 1
+        args.compress_hdr = 1
 
     # Mode shortcuts
-    if user_arguments.mode == 1:
-        user_arguments.compress_headers = 1
-        user_arguments.binary_write = 0
-    elif user_arguments.mode == 2:
-        user_arguments.compress_headers = 0
-        user_arguments.binary_write = 1
-    elif user_arguments.mode == 3:
-        user_arguments.compress_headers = 1
-        user_arguments.binary_write = 1
-    elif user_arguments.mode == 4:
-        user_arguments.compress_headers = 1
-        user_arguments.remove_repeating_header = 1
-        user_arguments.binary_write = 1
+    if args.mode == 0:
+        args.compress_hdr = 1
+        args.bin_write = 0
+        args.keep_bases = 1
+    elif args.mode == 1:
+        args.compress_hdr = 0
+        args.bin_write = 1
+    elif args.mode == 2:
+        args.compress_hdr = 1
+        args.bin_write = 1
+    elif args.mode == 3:
+        args.compress_hdr = 1
+        args.rm_repeat_hdr = 1
+        args.bin_write = 1
 
     # Phred alphabet configuration
-    if user_arguments.phred_alphabet == "phred42":
+    if args.phred_alpha == "phred42":
         phred_alphabet_max = 41
-    elif user_arguments.phred_alphabet == "phred63":
+    elif args.phred_alpha == "phred63":
         phred_alphabet_max = 62
-    elif user_arguments.phred_alphabet == "phred94":
+    elif args.phred_alpha == "phred94":
         phred_alphabet_max = 93
 
     # Validate custom formula if provided
-    if user_arguments.custom_formula:
-        user_arguments.custom_formula = validate_and_adjust_formula(
-            user_arguments.custom_formula,
+    if args.custom_formula:
+        args.custom_formula = validate_and_adjust_formula(
+            args.custom_formula,
             phred_alphabet_max
         )
 
     # Create base map
     numpy_base_map = np.zeros(128, dtype=np.uint8)
-    numpy_base_map[ord("N")] = user_arguments.gray_N
-    numpy_base_map[ord("A")] = user_arguments.gray_A
-    numpy_base_map[ord("T")] = user_arguments.gray_T
-    numpy_base_map[ord("C")] = user_arguments.gray_C
-    numpy_base_map[ord("G")] = user_arguments.gray_G
+    numpy_base_map[ord("N")] = args.gray_N
+    numpy_base_map[ord("A")] = args.gray_A
+    numpy_base_map[ord("T")] = args.gray_T
+    numpy_base_map[ord("C")] = args.gray_C
+    numpy_base_map[ord("G")] = args.gray_G
 
     start_time = time.perf_counter()
 
     # Initialize profiler if requested
     profiler = None
-    if user_arguments.profile == 1:
+    if args.profile == 1:
         profiler = cProfile.Profile()
         profiler.enable()
         print("Profiling enabled...")
 
     # Create phred map if needed
-    phred_map = create_phred_quality_map(user_arguments.phred_offset, phred_alphabet_max) if user_arguments.extract_quality else None
+    phred_map = create_phred_quality_map(args.phred_off, phred_alphabet_max) if args.extract_qual else None
 
-    print(f"Converting sequences from {user_arguments.input_path}...")
+    print(f"Converting sequences from {args.input_path}...")
     
     export_scalars_to_txt(
-        user_arguments.input_path, numpy_base_map,
-        user_arguments.output_path, phred_map, user_arguments.min_quality,
-        user_arguments.quality_scaling, user_arguments.binary_write,
-        user_arguments.log_a, compress_headers=(user_arguments.compress_headers == 1),
-        sequencer_type=user_arguments.sequencer_type,
-        sra_accession=user_arguments.sra_accession,
-        keep_bases=user_arguments.keep_bases, keep_quality=user_arguments.keep_quality,
-        binary_bases=user_arguments.binary_bases, binary_quality=user_arguments.binary_quality,
-        custom_formula=user_arguments.custom_formula,
-        multiple_flowcells=(user_arguments.multiple_flowcells == 1),
-        remove_repeating_header=(user_arguments.remove_repeating_header == 1),
+        args.input_path, numpy_base_map,
+        args.output_path, phred_map, args.min_qual,
+        args.qual_scale, args.bin_write,
+        args.log_a, compress_headers=(args.compress_hdr == 1),
+        sequencer_type=args.seq_type,
+        sra_accession=args.sra_acc,
+        keep_bases=args.keep_bases, keep_quality=args.keep_qual,
+        binary_bases=args.bin_bases, binary_quality=args.bin_qual,
+        custom_formula=args.custom_formula,
+        multiple_flowcells=(args.multi_flow == 1),
+        remove_repeating_header=(args.rm_repeat_hdr == 1),
         phred_alphabet_max=phred_alphabet_max,
-        paired_end=(user_arguments.paired_end == 1),
-        paired_end_mode=user_arguments.paired_end_mode,
-        num_workers=user_arguments.num_workers,
-        chunk_size_mb=user_arguments.chunk_size_mb
+        paired_end=(args.paired == 1),
+        paired_end_mode=args.paired_mode,
+        num_workers=args.workers,
+        chunk_size_mb=args.chunk_mb
     )
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
     print(f"Task completed in {elapsed_time:.4f} seconds")
-    print(f"Saved scalars to {user_arguments.output_path}")
+    print(f"Saved scalars to {args.output_path}")
     
     if profiler is not None:
         profiler.disable()

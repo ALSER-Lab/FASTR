@@ -60,8 +60,8 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         if not remove_repeating_header:
             outfile.write(record.header)
         
-        # Add start marker for sequence
-        outfile.write(b'<')
+        if not keep_bases: # Don't want to write out '<' when in first mode
+            outfile.write(b'<') # Add start marker for sequence
         
         seq_data = processed_seqs[idx]
         
@@ -81,5 +81,5 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         # Write quality scores if keep_quality is enabled
         if keep_quality and len(record.quality) > 0:
             outfile.write(b'+\n')
-            outfile.write(record.quality)  # ASCII quality string
+            outfile.write(record.quality_string)  # ASCII quality string
             outfile.write(b'\n')
