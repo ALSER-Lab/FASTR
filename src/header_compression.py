@@ -3,12 +3,14 @@ from typing import Dict, Tuple
 
 
 # Compiled regex patterns for different sequencer types
-ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
+ILLUMINA_PATTERN = re.compile(r'@([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+):(\d+)\s+(\d+):([YN]):(\d+):(.*)')
 PACBIO_CCS_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs')
 PACBIO_HIFI_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs(?:/(\w+))?')
 PACBIO_SUBREAD_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)')
 PACBIO_CLR_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+RQ=[\d.]+)?')
-SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)')
+# Handles: @HWUSI-EAS100R:6:73:941:1973#0/1
+OLD_ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):(\d+):(\d+):(\d+)#([A-Za-z0-9]+)/(\d+)')
+SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)') 
 
 
 def parse_illumina_header(header: str) -> Tuple[Dict, str]:
@@ -120,6 +122,8 @@ def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str]:
     """
     if sequencer_type == 'illumina':
         return parse_illumina_header(header)
+    elif sequencer_type == 'old_illumina':
+        return parse_old_illumina_header(header)
     elif sequencer_type == 'pacbio_hifi':
         return parse_pacbio_hifi_header(header)
     elif sequencer_type == 'pacbio_clr':
@@ -166,3 +170,20 @@ def metadata_dict_equals(dict1: Dict, dict2: Dict) -> bool:
         if dict1[key] != dict2[key]:
             return False
     return True
+
+def parse_old_illumina_header(header: str) -> Tuple[Dict, str]:
+    """Parse pre-Casava 1.8 Illumina headers"""
+    match = OLD_ILLUMINA_PATTERN.match(header)
+    if not match:
+        return {}, header
+    
+    groups = match.groups()
+    common = {
+        'instrument': groups[0],
+        'lane': groups[1],
+        # Old format often lacks explicit run_ids in the header, 
+        # so we group by instrument+lane
+    }
+    # Unique: tile:x:y#index/read_num
+    unique_id = f"{groups[2]}:{groups[3]}:{groups[4]}#{groups[5]}/{groups[6]}"
+    return common, unique_id
