@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--compress_hdr", type=int, default=0,
                         help="Compress FASTQ headers on-the-fly (0/1) [0]")
     parser.add_argument("--seq_type", type=str,
-                        choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr'],
+                        choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
                         default='none',
                         help="Sequencer type for header compression [none]")
     parser.add_argument("--multi_flow", type=int, default=0,
