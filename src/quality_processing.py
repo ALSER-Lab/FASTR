@@ -98,7 +98,7 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
     Transforms base encoding based on quality scores using various scaling methods.
     """
     # Straight up one-hot encoding
-    if scaling_method == 'none':
+    if scaling_method == 'one_hot':
         return base_values
     
     # Calculate scale factors based on method
