@@ -62,7 +62,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         metadata_position = outfile.tell()
         MAX_METADATA_LINES = 20
         placeholder_size = MAX_METADATA_LINES * 200  # 200 chars per line
-        if compress_headers and sequencer_type != 'none':
+        if sequencer_type != 'none':
             outfile.write(b' ' * placeholder_size)  # Write spaces as placeholder
             outfile.write(b'\n')
         
@@ -140,7 +140,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
         # Go back and write metadata headers at the beginning
-        if compress_headers and sequencer_type != 'none':
+        if sequencer_type != 'none':
             end_position = outfile.tell()
             outfile.seek(metadata_position)
             
@@ -199,9 +199,9 @@ def main():
     parser.add_argument("--phred_alpha", type=str, default='phred42',
                         help="Phred quality (q-score) ascii character alphabet used by input [phred42]")
     parser.add_argument("--min_qual", type=int, default=0,
-                        help="Minimum quality score threshold [0]")
-    parser.add_argument("--qual_scale", type=str, choices=['log', 'log_reverse', 'log_custom', 'custom'], default='none',
-                        help="Quality scaling method [none]")
+                        help="Clamped minimum quality score threshold [0]")
+    parser.add_argument("--qual_scale", type=str, choices=['log', 'log_reverse', 'log_custom', 'one_hot', 'custom'], default='one_hot',
+                        help="Quality scaling method [one_hot]")
     parser.add_argument("--custom_formula", type=str, default=None,
                         help="Custom formula for quality scaling (use 'x' for quality score). "
                              "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
@@ -284,11 +284,13 @@ def main():
         print("Enabling header compression automatically...")
         args.compress_hdr = 1
 
+
     # Mode shortcuts
     if args.mode == 0:
         args.compress_hdr = 1
         args.bin_write = 0
         args.keep_bases = 1
+        args.keep_qual = 1
     elif args.mode == 1:
         args.compress_hdr = 0
         args.bin_write = 1

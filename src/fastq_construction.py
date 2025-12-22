@@ -17,27 +17,118 @@ class MetadataBlock:
     start_index: int
     end_index: int
 
-def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Optional[str]]:
+def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], int, Optional[str]]:
     """
     Parse metadata headers from the beginning of the file in order to reconstruct it later
     """
     metadata_blocks = []
     sra_accession = None
     
-    first_seq_marker = data.find(b'<')
+    if mode == 1:
+        # Mode 1: Only bases compressed (no header compression)
+        # Parse metadata for quality reconstruction, then find where actual sequences start
+
+        # Fixed bug that was caused by mode 1 "not needing to look at the metadata" despite it needing to reverse the scaling equation
+        # All modes look at the metadata header
+        first_header = data.find(b'\n@')
+        if first_header == -1:
+            first_header = data.find(b'@')
+            if first_header == -1:
+                first_header = 0
+        
+        # Parse metadata section before first @ header
+        if first_header > 0:
+            header_section = data[:first_header].decode('utf-8', errors='ignore')
+            lines = [line.strip() for line in header_section.split('\n') if line.strip()]
+            
+            print(f"Parsed {len(lines)} header lines")
+            for i, line in enumerate(lines[:5]):  # Show first 5 lines
+                print(f"  Line {i}: {line[:80]}")
+            
+            line_idx = 0
+            
+            # Check for SRA accession
+            if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'COMMON:']):
+                sra_accession = lines[0][1:]
+                print(f"Found SRA accession: {sra_accession}")
+                line_idx = 1
+            
+            # Process metadata lines
+            while line_idx < len(lines):
+                line = lines[line_idx]
+                
+                if line.startswith('@'):
+                    print(f"Reached sequence headers at line {line_idx}")
+                    break
+                
+                if line.startswith('<'):
+                    break
+                
+                if line.startswith('#COMMON:'):
+                    common_metadata_str = line.split(':', 1)[1].strip()
+                    print(f"Found COMMON metadata: {common_metadata_str}")
+                    line_idx += 1
+                    continue
+                
+                if line.startswith('#SEQUENCER:'):
+                    sequencer_type = line.split(':', 1)[1].strip()
+                    
+                    common_metadata_str = None
+                    if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
+                        common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
+                    
+                    line_idx += 1
+                    
+                    scaling_equation = 'x'
+                    if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER') and not lines[line_idx].startswith('#COMMON:'):
+                        scaling_equation = lines[line_idx][1:].strip()
+                        print(f"Found equation: {scaling_equation}")
+                        line_idx += 1
+                    
+                    if common_metadata_str:
+                        common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
+                        print(f"Parsed common metadata: {common_metadata}")
+                    elif sra_accession:
+                        common_metadata = parse_common_metadata(sra_accession, 'srr')
+                    else:
+                        common_metadata = {}
+                    
+                    start_index = 0
+                    end_index = -1
+                    
+                    if line_idx < len(lines) and lines[line_idx].startswith('@RANGE:'):
+                        range_str = lines[line_idx][7:]
+                        start_index, end_index = map(int, range_str.split('-'))
+                        print(f"Found range: {start_index}-{end_index}")
+                        line_idx += 1
+                    
+                    metadata_blocks.append(MetadataBlock(
+                        common_metadata=common_metadata,
+                        sequencer_type=sequencer_type,
+                        scaling_equation=scaling_equation,
+                        start_index=start_index,
+                        end_index=end_index
+                    ))
+                else:
+                    line_idx += 1
+        
+        # Find actual data start (first @ header)
+        actual_data_start = first_header if first_header > 0 else 0
+        return metadata_blocks, actual_data_start, sra_accession
+    
+    # Mode 0 and 2: Header compression enabled
+    first_seq_marker = data.find(b'<') if mode == 2 else data.find(b'\n@')
     if first_seq_marker == -1:
         return metadata_blocks, 0, sra_accession
     
     # Find the @ before the first < (where sequence actually starts)
-    search_start = max(0, first_seq_marker - 1000)  # Look back up to 1000 bytes
+    search_start = max(0, first_seq_marker - 1000)
     header_before_seq = data[search_start:first_seq_marker]
     last_at = header_before_seq.rfind(b'\n@')
     
     if last_at != -1:
-        # Found a header, sequence data starts there
-        actual_data_start = search_start + last_at + 1  # +1 to skip the \n
+        actual_data_start = search_start + last_at + 1
     else:
-        # No header found, might be at the very start
         if data[0:1] == b'@':
             actual_data_start = 0
         else:
@@ -46,68 +137,54 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
     header_section = data[:actual_data_start].decode('utf-8', errors='ignore')
     lines = [line.strip() for line in header_section.split('\n') if line.strip()]
     
-    print(f"Parsed {len(lines)} header lines (before first '<')")
-    for i, line in enumerate(lines):
+    print(f"Parsed {len(lines)} header lines")
+    for i, line in enumerate(lines[:5]):  # Show first 5 lines
         print(f"  Line {i}: {line[:80]}")
     
     line_idx = 0
     
-    # Check for SRA accession (first line starting with # but not a metadata tag)
+    # Check for SRA accession
     if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'COMMON:']):
-        # First line is SRA accession
-        sra_accession = lines[0][1:]  # Remove #
+        sra_accession = lines[0][1:]
         print(f"Found SRA accession: {sra_accession}")
         line_idx = 1
     
-    # Only process lines that are actual metadata
+    # Process metadata lines
     while line_idx < len(lines):
         line = lines[line_idx]
         
-        # Stop if we hit sequence data (lines starting with @ but not @RANGE)
         if line.startswith('@') and not line.startswith('@RANGE'):
-            # Check if this looks like a sequence header vs metadata
-            test_content = line[1:]  # Remove @
-            
-            # If it's just numbers and colons/slashes (like "1:1" or "2/1"), it's a sequence header
+            test_content = line[1:]
             if re.match(r'^\d+[:/]\d+$', test_content):
                 print(f"Detected sequence header at line {line_idx}: {line}")
                 break
-            
-            # Otherwise we'll treat as metadata (shouldn't happen, just being safe though)
             print(f"WARNING: Found @ line that's not @RANGE: {line}")
             break
         
-        # Stop if we somehow hit sequence data markers
         if line.startswith('<'):
             break
         
-        # Look for common metadata line (new format)
         if line.startswith('#COMMON:'):
             common_metadata_str = line.split(':', 1)[1].strip()
             print(f"Found COMMON metadata: {common_metadata_str}")
-            # We'll use this when we find the SEQUENCER line
             line_idx += 1
             continue
         
-        # Look for sequencer type line
         if line.startswith('#SEQUENCER:'):
             sequencer_type = line.split(':', 1)[1].strip()
             
-            # Look back one line for COMMON metadata
             common_metadata_str = None
             if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
                 common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
             
             line_idx += 1
             
-            # Parse scaling equation (next line should start with #)
             scaling_equation = 'x'
             if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER') and not lines[line_idx].startswith('#COMMON:'):
                 scaling_equation = lines[line_idx][1:].strip()
                 print(f"Found equation: {scaling_equation}")
                 line_idx += 1
             
-            # Parse common metadata based on sequencer type
             if common_metadata_str:
                 common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
                 print(f"Parsed common metadata: {common_metadata}")
@@ -119,7 +196,6 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
             start_index = 0
             end_index = -1
             
-            # Check for range
             if line_idx < len(lines) and lines[line_idx].startswith('@RANGE:'):
                 range_str = lines[line_idx][7:]
                 start_index, end_index = map(int, range_str.split('-'))
@@ -134,9 +210,10 @@ def parse_metadata_header(data: bytes) -> Tuple[List[MetadataBlock], int, Option
                 end_index=end_index
             ))
         else:
-            line_idx += 1 # Skip any other lines
+            line_idx += 1
     
     return metadata_blocks, actual_data_start, sra_accession
+
 
 def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray:
     # Just copy-pasted from quality_processing.py 
@@ -418,11 +495,10 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 
 def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges, 
                                        metadata_blocks, inverse_tables, 
-                                       phred_alphabet_max, phred_offset, sra_accession):
+                                       phred_alphabet_max, phred_offset, sra_accession,
+                                       mode):
     """
     Worker function that processes a single chunk of binary sequence data in parallel.
-    We use same streaming + multiprocessing approach as in our to_fastr converison methodology (can be more specifically found in chunk_processor.py)
-    (chunk_id, reconstructed_fastq_text, sequence_count)
     """
     try:
         chunk_id, chunk_binary, start_seq_idx = chunk_data
@@ -433,65 +509,68 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
         pos = 0
         
         # Determine which metadata block to use for this chunk
-        # (for files with multiple flowcells, different ranges use different metadata)
         current_metadata_idx = 0
-        for i, mb in enumerate(metadata_blocks):
-            if mb.end_index == -1 or sequence_count <= mb.end_index:
-                current_metadata_idx = i
-                break
-        
-        current_metadata = metadata_blocks[current_metadata_idx]
-        current_inverse_table = inverse_tables[current_metadata_idx]
-        
-        # Process all sequences in this chunk
-        while pos < len(chunk_binary):
-            # Find sequence start marker '<'
-            if chunk_binary[pos:pos+1] != b'<':
-                pos += 1
-                continue
-            
-            pos += 1  # Skip <
-            
-            # Find newline to determine sequence length
-            seq_end = chunk_binary.find(b'\n', pos)
-            if seq_end == -1:
-                if pos < len(chunk_binary):
-                    seq_end = len(chunk_binary)
-                else:
+        if metadata_blocks:
+            for i, mb in enumerate(metadata_blocks):
+                if mb.end_index == -1 or sequence_count <= mb.end_index:
+                    current_metadata_idx = i
                     break
-            
-            # Extract binary sequence data
-            seq_data = chunk_binary[pos:seq_end]
-            
-            # Check if we need to switch metadata blocks (for multiple flowcells)
-            if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                next_metadata = metadata_blocks[current_metadata_idx + 1]
-                if sequence_count >= next_metadata.start_index:
-                    current_metadata = next_metadata
-                    current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                    current_metadata_idx += 1
-            
-            # Convert binary values back to bases
-            seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-            bases_array = reverse_map[seq_array]
-            bases = bases_array.tobytes().decode('ascii')
-            
-            # Try to find header before this sequence by searching backwards
-            header_search_start = max(0, pos - 500)
-            header_section = chunk_binary[header_search_start:pos]
-
-            unique_id = None
-            pair_number = 0
-
-            # Find last '@' before '<' (the header for this sequence)
-            last_at = header_section.rfind(b'@')
-            if last_at != -1:
-                header_line_start = header_search_start + last_at
-                header_line_end = chunk_binary.find(b'\n', header_line_start)
-                if header_line_end != -1 and header_line_end <= pos:
-                    header_content = chunk_binary[header_line_start+1:header_line_end].decode('utf-8', errors='ignore').strip()
+            current_metadata = metadata_blocks[current_metadata_idx]
+            current_inverse_table = inverse_tables[current_metadata_idx] if inverse_tables else None
+        else:
+            current_metadata = None
+            current_inverse_table = None
+        
+        # Mode 1: Only bases compressed (original headers intact)
+        if mode == 1:
+            lines = chunk_binary.split(b'\n')
+            i = 0
+            while i < len(lines):
+                if lines[i].startswith(b'@'):
+                    # Original header
+                    header = lines[i].decode('utf-8', errors='ignore')
+                    i += 1
+                    if i < len(lines) and lines[i].startswith(b'<'):
+                        # Binary sequence
+                        seq_data = lines[i][1:]  # Skip '<'
+                        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                        bases_array = reverse_map[seq_array]
+                        bases = bases_array.tobytes().decode('ascii')
+                        
+                        # Reconstruct quality if inverse table available
+                        if current_inverse_table is not None:
+                            quality_scores = reverse_scaling_to_quality(
+                                seq_array, base_ranges, reverse_map,
+                                current_inverse_table, max_phred=phred_alphabet_max
+                            )
+                            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                        else:
+                            # Generate default quality scores
+                            quality_string = 'I' * len(bases)
+                        
+                        output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+                        sequence_count += 1
+                        i += 1
+                    else:
+                        i += 1
+                else:
+                    i += 1
+        
+        # Mode 0: Only headers compressed (bases as text)
+        elif mode == 0:
+            lines = chunk_binary.split(b'\n')
+            i = 0
+            while i < len(lines):
+                # Skip empty lines
+                if not lines[i].strip():
+                    i += 1
+                    continue
                     
-                    # Check for pair number suffix (for paired-end reads)
+                if lines[i].startswith(b'@'):
+                    # Compressed header - reconstruct it
+                    header_content = lines[i][1:].decode('utf-8', errors='ignore').strip()
+                    
+                    pair_number = 0
                     if '/' in header_content:
                         parts = header_content.rsplit('/', 1)
                         unique_id = parts[0]
@@ -501,18 +580,84 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                             unique_id = header_content
                     else:
                         unique_id = header_content
-
-            # A bug I ran into when implementing multiprocessing was the first sequence header being improperly reconstructed (normally as "seq_0")
-            # A duct-tape-esque fix right now is that if we're very near the start and haven't found a header yet, search from beginning
-            elif pos <= 510 and chunk_binary[:pos].count(b'<') == 1:
-                first_at = chunk_binary.find(b'@')
-                if first_at != -1 and first_at < pos:
-                    header_line_end = chunk_binary.find(b'\n', first_at)
-                    print(f"DEBUG: header_line_end = {header_line_end}")
-                    if header_line_end != -1 and header_line_end < pos:
-                        header_content = chunk_binary[first_at+1:header_line_end].decode('utf-8', errors='ignore').strip()
+                    
+                    if current_metadata:
+                        header = reconstruct_header(unique_id, current_metadata.common_metadata,
+                                                  current_metadata.sequencer_type, pair_number, sra_accession)
+                    else:
+                        header = f"@{unique_id}"
+                    
+                    i += 1
+                    # Get sequence line (skip if empty)
+                    while i < len(lines) and not lines[i].strip():
+                        i += 1
+                    
+                    if i < len(lines):
+                        # Text bases
+                        bases = lines[i].decode('ascii', errors='ignore').strip()
+                        i += 1
                         
-                        # Check for pair number
+                        # Skip '+' line (and any empty lines before it)
+                        while i < len(lines) and not lines[i].strip():
+                            i += 1
+                        if i < len(lines) and lines[i].strip() == b'+':
+                            i += 1
+                        
+                        # Skip empty lines before quality
+                        while i < len(lines) and not lines[i].strip():
+                            i += 1
+                            
+                        # Get quality line
+                        if i < len(lines):
+                            quality_string = lines[i].decode('ascii', errors='ignore').strip()
+                            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+                            sequence_count += 1
+                            i += 1
+                else:
+                    i += 1
+        
+        # Mode 2: Headers compressed, bases as binary (original behavior)
+        else:
+            while pos < len(chunk_binary):
+                if chunk_binary[pos:pos+1] != b'<':
+                    pos += 1
+                    continue
+                
+                pos += 1
+                
+                seq_end = chunk_binary.find(b'\n', pos)
+                if seq_end == -1:
+                    if pos < len(chunk_binary):
+                        seq_end = len(chunk_binary)
+                    else:
+                        break
+                
+                seq_data = chunk_binary[pos:seq_end]
+                
+                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                    next_metadata = metadata_blocks[current_metadata_idx + 1]
+                    if sequence_count >= next_metadata.start_index:
+                        current_metadata = next_metadata
+                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                        current_metadata_idx += 1
+                
+                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                bases_array = reverse_map[seq_array]
+                bases = bases_array.tobytes().decode('ascii')
+                
+                header_search_start = max(0, pos - 500)
+                header_section = chunk_binary[header_search_start:pos]
+
+                unique_id = None
+                pair_number = 0
+
+                last_at = header_section.rfind(b'@')
+                if last_at != -1:
+                    header_line_start = header_search_start + last_at
+                    header_line_end = chunk_binary.find(b'\n', header_line_start)
+                    if header_line_end != -1 and header_line_end <= pos:
+                        header_content = chunk_binary[header_line_start+1:header_line_end].decode('utf-8', errors='ignore').strip()
+                        
                         if '/' in header_content:
                             parts = header_content.rsplit('/', 1)
                             unique_id = parts[0]
@@ -522,83 +667,106 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                                 unique_id = header_content
                         else:
                             unique_id = header_content
-            
-            # Reconstruct full header from compressed unique id
-            if unique_id:
-                header = reconstruct_header(unique_id, current_metadata.common_metadata,
-                                          current_metadata.sequencer_type, pair_number, sra_accession)
-            else:
-                # Fallback is togenerate generic header if we couldn't find the compressed one
-                if sra_accession:
-                    header = f"@{sra_accession}.{sequence_count}"
+
+                elif pos <= 510 and chunk_binary[:pos].count(b'<') == 1:
+                    first_at = chunk_binary.find(b'@')
+                    if first_at != -1 and first_at < pos:
+                        header_line_end = chunk_binary.find(b'\n', first_at)
+                        if header_line_end != -1 and header_line_end < pos:
+                            header_content = chunk_binary[first_at+1:header_line_end].decode('utf-8', errors='ignore').strip()
+                            
+                            if '/' in header_content:
+                                parts = header_content.rsplit('/', 1)
+                                unique_id = parts[0]
+                                try:
+                                    pair_number = int(parts[1])
+                                except:
+                                    unique_id = header_content
+                            else:
+                                unique_id = header_content
+                
+                if unique_id and current_metadata:
+                    header = reconstruct_header(unique_id, current_metadata.common_metadata,
+                                              current_metadata.sequencer_type, pair_number, sra_accession)
                 else:
-                    header = f"@seq_{sequence_count}"
-            
-            # Apply reverse scaling to reconstruct original quality scores
-            quality_scores = reverse_scaling_to_quality(
-                seq_array,
-                base_ranges,
-                reverse_map,
-                current_inverse_table,
-                max_phred=phred_alphabet_max
-            )
-            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-            
-            # Add complete FASTQ record to output buffer
-            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
-            
-            sequence_count += 1
-            pos = seq_end + 1
+                    if sra_accession:
+                        header = f"@{sra_accession}.{sequence_count}"
+                    else:
+                        header = f"@seq_{sequence_count}"
+                
+                if current_inverse_table is not None:
+                    quality_scores = reverse_scaling_to_quality(
+                        seq_array, base_ranges, reverse_map,
+                        current_inverse_table, max_phred=phred_alphabet_max
+                    )
+                    quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                else:
+                    quality_string = 'I' * len(bases)
+                
+                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+                
+                sequence_count += 1
+                pos = seq_end + 1
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
         return (chunk_id, ''.join(output_buffer), sequence_count - start_seq_idx)
     
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")
+        import traceback
+        traceback.print_exc()
         raise
+
 
 def reconstruct_fastq(input_path: str, output_path: str, 
                      gray_N: int = 1, gray_A: int = 63, gray_T: int = 127,
                      gray_C: int = 191, gray_G: int = 255, phred_alphabet_max: int = 41,
-                     phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4):
+                     phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4,
+                     mode: int = 2):
     """
-    Reconstruct FASTQ file from FASTR (mode 3) using parallel processing.
-    Assumes binary writing was used in sequence_converter (--binary_write 1).
+    Reconstruct FASTQ file from FASTR using parallel processing.
+    
+    Modes:
+    0 - Only headers compressed (bases as text, quality preserved)
+    1 - Only bases compressed (headers intact, bases as binary)
+    2 - Headers compressed + bases as binary (full compression)
     """
     print(f"Reading FASTR: {input_path}")
+    print(f"Reconstruction mode: {mode}")
     
-    # Read entire file as binary
     with open(input_path, 'rb') as f:
         data = f.read()
     file_size = len(data)
     print(f"File size: {file_size:,} bytes ({file_size / (1024**2):.2f} MB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    # Parse metadata headers from the beginning of the file
-    metadata_blocks, data_start_byte, sra_accession = parse_metadata_header(data)
+    metadata_blocks, data_start_byte, sra_accession = parse_metadata_header(data, mode)
     
-    if not metadata_blocks:
-        print("ERROR: No metadata found?")
-        return
+    if mode in [0, 2] and not metadata_blocks:
+        print("WARNING: No metadata found for header reconstruction")
     
-    print(f"Found {len(metadata_blocks)} metadata block(s)")
+    if metadata_blocks:
+        print(f"Found {len(metadata_blocks)} metadata block(s)")
+        for i, mb in enumerate(metadata_blocks):
+            print(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
+    
     if sra_accession:
         print(f"SRA Accession: {sra_accession}")
     
-    for i, mb in enumerate(metadata_blocks):
-        print(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
-    
-    # Create reverse base mapping (binary values:ASCII bases)
     reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
     
-    # Pre-compute inverse quality tables for each metadata block (making it easier to reverse)
     inverse_tables = []
-    for mb in metadata_blocks:
-        formula_func = build_formula_func(mb.scaling_equation)
-        inverse_table = build_inverse_quality_table(formula_func, phred_alphabet_max)
-        inverse_tables.append(inverse_table)
+    if mode in [1, 2]:
+        if metadata_blocks:
+            for mb in metadata_blocks:
+                formula_func = build_formula_func(mb.scaling_equation)
+                inverse_table = build_inverse_quality_table(formula_func, phred_alphabet_max)
+                inverse_tables.append(inverse_table)
+        
+        if not inverse_tables and mode == 1:
+            # Mode 1 without metadata - create default inverse table
+            inverse_tables.append(np.arange(64, dtype=int))
     
-    # Base ranges for quality decoding (each base has a 63-value range)
     base_ranges = {
         'A': (1, 63),
         'T': (65, 127),
@@ -610,7 +778,6 @@ def reconstruct_fastq(input_path: str, output_path: str,
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
     print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
-    # Generator function to yield chunks from binary data
     def chunk_generator():
         buffer = data[data_start_byte:]
         chunk_id = 0
@@ -620,28 +787,33 @@ def reconstruct_fastq(input_path: str, output_path: str,
         while pos < len(buffer):
             chunk_end = min(pos + chunk_size_bytes, len(buffer))
             
-            # Find last complete sequence boundary (look for < followed by content and newline)
-            # We want to split on sequence boundaries to avoid cutting sequences in half
-            search_start = max(pos, chunk_end - 1000)
-            last_marker = buffer.rfind(b'<', search_start, chunk_end)
+            # Find boundary based on mode
+            if mode == 2:
+                # Mode 2: Split on '<' markers
+                search_start = max(pos, chunk_end - 1000)
+                last_marker = buffer.rfind(b'<', search_start, chunk_end)
+                
+                if last_marker != -1 and last_marker > pos:
+                    seq_end = buffer.find(b'\n', last_marker)
+                    if seq_end != -1 and seq_end < len(buffer):
+                        chunk_end = seq_end + 1
+            else:
+                # Mode 0 and 1: Split on '@' headers
+                search_start = max(pos, chunk_end - 1000)
+                last_header = buffer.rfind(b'\n@', search_start, chunk_end)
+                
+                if last_header != -1 and last_header > pos:
+                    chunk_end = last_header + 1
             
-            if last_marker != -1 and last_marker > pos:
-                # Find the newline after this sequence to get the complete sequence
-                seq_end = buffer.find(b'\n', last_marker)
-                if seq_end != -1 and seq_end < len(buffer):
-                    chunk_end = seq_end + 1
-            
-            # Include overlap from before the chunk to capture headers
-            # We do this because headers are stored before their sequences, 
-            # so we need to look back to check whether each chunk contains the headers for all its sequences
             overlap_start = max(0, pos - 500)
             chunk_binary = buffer[overlap_start:chunk_end]
             
             if chunk_binary:
-                # Estimate sequences in this chunk for tracking purposes
-                # Only count sequences in the NEW data (not the overlap) to avoid double counting
                 actual_start_in_chunk = pos - overlap_start
-                estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'<')
+                if mode == 2:
+                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'<')
+                else:
+                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'\n@')
                 
                 yield (chunk_id, chunk_binary, start_seq_idx)
                 
@@ -660,9 +832,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     total_sequences = 0
     
     with open(output_path, 'w', buffering=chunk_size_bytes) as outfile:
-        # Create worker pool and process chunks as they come in
         with Pool(processes=num_workers) as pool:
-            # Create partial function with fixed arguments
             worker_func = partial(
                 process_chunk_worker_reconstruction,
                 reverse_map=reverse_map,
@@ -671,13 +841,11 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 inverse_tables=inverse_tables,
                 phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
-                sra_accession=sra_accession
+                sra_accession=sra_accession,
+                mode=mode
             )
             
-            # Use imap to process chunks as they're read (streaming), like how it is done in to_fastr.py
-            # chunksize=1 makes order preserved for sequential writing
             for chunk_id, fastq_text, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
-                # Write immediately as each chunk completes
                 outfile.write(fastq_text)
                 
                 total_sequences += count
@@ -688,40 +856,45 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"\nTotal sequences reconstructed: {total_sequences:,}")
     print(f"Output saved to: {output_path}")
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Reconstruct FASTQ files from compressed binary format (mode 3)")
-    parser.add_argument("input_path", type=str, help="Path to compressed binary file")
+    parser = argparse.ArgumentParser(description="Reconstruct FASTQ files from FASTR format")
+    parser.add_argument("input_path", type=str, help="Path to FASTR file")
     parser.add_argument("output_path", type=str, help="Output FASTQ file path")
+    
+    # Mode selection
+    parser.add_argument("--mode", type=int, default=2, choices=[0, 1, 2],
+                        help="Conversion mode: 0=headers only, 1=bases only, 2=both (default: 2)")
     
     # Quality parameters
     parser.add_argument("--phred_offset", type=int, default=33,
                         help="Phred quality offset for output (default: 33)")
     parser.add_argument("--phred_alphabet", type=str, default='phred42',
-                       help="Phred alphabet used (phred42/phred63/phred94)")
+                        help="Phred alphabet used (phred42/phred63/phred94)")
     
-    # Base mapping (copy-pasted from sequence_converter.py)
+    # Base mapping
     parser.add_argument("--gray_N", type=int, default=1)
     parser.add_argument("--gray_A", type=int, default=63)
     parser.add_argument("--gray_T", type=int, default=127)
     parser.add_argument("--gray_C", type=int, default=191)
     parser.add_argument("--gray_G", type=int, default=255)
     
-    # Multiprocessing arguments
+    # Multiprocessing
     parser.add_argument("--chunk_size_mb", type=int, default=32,
                         help="Chunk size in MB for parallel processing (default: 32)")
     parser.add_argument("--num_workers", type=int, default=4,
-                        help="Number of parallel workers (default: 4, use 4+ for large files)")
+                        help="Number of parallel workers (default: 4)")
     
     args = parser.parse_args()
     
-    # Determine phred alphabet max
-    # This may not properly be transferred to our reverse_scaling_quality(), but it is fine for now. 
     if args.phred_alphabet == "phred42":
         phred_alphabet_max = 41
-    if args.phred_alphabet == "phred63":
+    elif args.phred_alphabet == "phred63":
         phred_alphabet_max = 62
     elif args.phred_alphabet == "phred94":
         phred_alphabet_max = 93
+    else:
+        phred_alphabet_max = 41
     
     start_time = time.perf_counter()
     
@@ -733,7 +906,8 @@ def main():
         phred_alphabet_max=phred_alphabet_max,
         phred_offset=args.phred_offset,
         chunk_size_mb=args.chunk_size_mb,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        mode=args.mode
     )
     
     end_time = time.perf_counter()
