@@ -256,7 +256,7 @@ def main():
     output_group.add_argument("--keep_qual", type=int, default=0,
                               help="INT: Keep original quality scores in output (0/1) [0]")
     output_group.add_argument("--phred_alpha", type=str, default='phred42',
-                              help="STRING: Phred quality (q-score) ascii character alphabet used by input [phred42]")
+                              help="STRING: Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
     
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
