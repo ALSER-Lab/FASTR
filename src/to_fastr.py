@@ -226,7 +226,9 @@ def main():
     seq_group.add_argument("--seq_type", type=str, metavar="STR",
                            choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
                            default='none',
-                           help="Sequencer type for header compression. Available options: {'none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'} [none]")
+                           help="Sequencer type for header compression. [none]\n"
+                           "Available options: {'none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', \n"
+                           "                    'pacbio_clr', 'ont', 'srr', 'old_illumina'} ")
     seq_group.add_argument("--compress_hdr", type=int, default=0, metavar="INT",
                            help="Compress FASTQ headers on-the-fly (0/1) [0]")
     seq_group.add_argument("--sra_acc", type=str, default=None, metavar="STR",
