@@ -182,90 +182,92 @@ def main():
 
     # Positional Arguments
     parser.add_argument("input_path", 
-                        help="FILE: Path of .fasta or .fastq file")
+                        metavar="FILE",
+                        help="Path of .fasta or .fastq file")
     parser.add_argument("output_path", 
-                        help="FILE: Output file path")
+                        metavar="FILE",
+                        help="Output file path")
 
     # Mode Group
     mode_group = parser.add_argument_group("OPERATION MODES")
-    mode_group.add_argument("--mode", type=int,
-                            help="INT: 0: Header compression only\n"
-                                 "     1: Base conversion into numbers only\n"
-                                 "     2: Header and base conversion, written out in two lines\n"
-                                 "     3: Repeating header removal entirely, base conversion kept, written out in one line")
-    
+    mode_group.add_argument("--mode", type=int, metavar="INT",
+                            help="0: Header compression only\n"
+                                 "1: Base conversion into numbers only\n"
+                                 "2: Header and base conversion, written out in two lines\n"
+                                 "3: Repeating header removal entirely, base conversion kept, written out in one line")
+
     # Quality Group
     quality_group = parser.add_argument_group("QUALITY SCALING")
-    quality_group.add_argument("--qual_scale", type=str, 
+    quality_group.add_argument("--qual_scale", type=str, metavar="STR",
                                choices=['log', 'log_reverse', 'log_custom', 'one_hot', 'custom'], 
                                default='one_hot',
-                               help="STRING: Quality scaling method [one_hot]")
-    quality_group.add_argument("--extract_qual", type=int, default=1,
-                               help="INT: For FASTQ: extract quality scores (0/1) [1]")
-    quality_group.add_argument("--phred_off", type=int, default=33,
-                               help="INT: Phred quality offset [33]")
-    quality_group.add_argument("--min_qual", type=int, default=0,
-                               help="INT: Clamped minimum quality score threshold [0]")
-    quality_group.add_argument("--custom_formula", type=str, default=None,
-                               help="STRING: Custom formula for quality scaling (use 'x' for quality score). "
+                               help="Quality scaling method [one_hot]")
+    quality_group.add_argument("--extract_qual", type=int, default=1, metavar="INT",
+                               help="For FASTQ: extract quality scores (0/1) [1]")
+    quality_group.add_argument("--phred_off", type=int, default=33, metavar="INT",
+                               help="Phred quality offset [33]")
+    quality_group.add_argument("--min_qual", type=int, default=0, metavar="INT",
+                               help="Clamped minimum quality score threshold [0]")
+    quality_group.add_argument("--custom_formula", type=str, default=None, metavar="STR",
+                               help="Custom formula for quality scaling (use 'x' for quality score). "
                                     "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'")
-    
+
     # Paired-end args
     paired_end = parser.add_argument_group("PAIRED-END")
-    paired_end.add_argument("--paired", type=int, default=0,
-                            help="INT: Paired-end reads flag (0/1) [0]")
-    paired_end.add_argument("--paired_mode", type=str, 
+    paired_end.add_argument("--paired", type=int, default=0, metavar="INT",
+                            help="Paired-end reads flag (0/1) [0]")
+    paired_end.add_argument("--paired_mode", type=str, metavar="STR",
                             choices=['same_file', 'separate_files'], 
                             default='same_file',
-                            help="STRING: Output mode for paired-end reads [same_file]")
-    
+                            help="Output mode for paired-end reads [same_file]")
+
     # Sequencer Group
     seq_group = parser.add_argument_group("SEQUENCER & HEADERS")
-    seq_group.add_argument("--seq_type", type=str,
+    seq_group.add_argument("--seq_type", type=str, metavar="STR",
                            choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
                            default='none',
-                           help="STRING: Sequencer type for header compression [none]")
-    seq_group.add_argument("--compress_hdr", type=int, default=0,
-                           help="INT: Compress FASTQ headers on-the-fly (0/1) [0]")
-    seq_group.add_argument("--sra_acc", type=str, default=None,
-                           help="STRING: SRA accession number (e.g., SRR12345678) [null]")
-    seq_group.add_argument("--multi_flow", type=int, default=0,
-                           help="INT: Enable multiple flowcell detection and tracking (0/1) [0]")
-    seq_group.add_argument("--rm_repeat_hdr", type=int, default=0,
-                           help="INT: Remove repeating metadata from headers, store only at top (0/1) [0]")
+                           help="Sequencer type for header compression [none]")
+    seq_group.add_argument("--compress_hdr", type=int, default=0, metavar="INT",
+                           help="Compress FASTQ headers on-the-fly (0/1) [0]")
+    seq_group.add_argument("--sra_acc", type=str, default=None, metavar="STR",
+                           help="SRA accession number (e.g., SRR12345678) [null]")
+    seq_group.add_argument("--multi_flow", type=int, default=0, metavar="INT",
+                           help="Enable multiple flowcell detection and tracking (0/1) [0]")
+    seq_group.add_argument("--rm_repeat_hdr", type=int, default=0, metavar="INT",
+                           help="Remove repeating metadata from headers, store only at top (0/1) [0]")
 
     # Encoding/Grayscale Group
     gray_group = parser.add_argument_group("ENCODING & GRAYSCALE")
-    gray_group.add_argument("--gray_N", type=int, default=1,
-                            help="INT: Grayscale value for N [1]")
-    gray_group.add_argument("--gray_A", type=int, default=63,
-                            help="INT: Grayscale value for A [63]")
-    gray_group.add_argument("--gray_C", type=int, default=191,
-                            help="INT: Grayscale value for C [191]")
-    gray_group.add_argument("--gray_G", type=int, default=255,
-                            help="INT: Grayscale value for G [255]")
-    gray_group.add_argument("--gray_T", type=int, default=127,
-                            help="INT: Grayscale value for T [127]")
-    
+    gray_group.add_argument("--gray_N", type=int, default=1, metavar="INT",
+                            help="Grayscale value for N [1]")
+    gray_group.add_argument("--gray_A", type=int, default=63, metavar="INT",
+                            help="Grayscale value for A [63]")
+    gray_group.add_argument("--gray_C", type=int, default=191, metavar="INT",
+                            help="Grayscale value for C [191]")
+    gray_group.add_argument("--gray_G", type=int, default=255, metavar="INT",
+                            help="Grayscale value for G [255]")
+    gray_group.add_argument("--gray_T", type=int, default=127, metavar="INT",
+                            help="Grayscale value for T [127]")
+
     # Output format
     output_group = parser.add_argument_group("OUTPUT FORMAT")
-    output_group.add_argument("--bin_write", type=int, default=1,
-                              help="INT: Enable binary writing of sequence integers (0/1) [1]")
-    output_group.add_argument("--keep_bases", type=int, default=0,
-                              help="INT: Return textual bases without scaling or one-hot encoding (0/1) [0]")
-    output_group.add_argument("--keep_qual", type=int, default=0,
-                              help="INT: Keep original quality scores in output (0/1) [0]")
-    output_group.add_argument("--phred_alpha", type=str, default='phred42',
-                              help="STRING: Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
-    
+    output_group.add_argument("--bin_write", type=int, default=1, metavar="INT",
+                              help="Enable binary writing of sequence integers (0/1) [1]")
+    output_group.add_argument("--keep_bases", type=int, default=0, metavar="INT",
+                              help="Return textual bases without scaling or one-hot encoding (0/1) [0]")
+    output_group.add_argument("--keep_qual", type=int, default=0, metavar="INT",
+                              help="Keep original quality scores in output (0/1) [0]")
+    output_group.add_argument("--phred_alpha", type=str, default='phred42', metavar="STR",
+                              help="Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
+
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
-    perf_group.add_argument("--workers", type=int, default=1,
-                            help="INT: Number of parallel workers (use 4+ for large files >5GB) [1]")
-    perf_group.add_argument("--chunk_mb", type=int, default=32,
-                            help="INT: Chunk size in MB for parallel processing [32]")
-    perf_group.add_argument("--profile", type=int, default=0,
-                            help="INT: Enable profiling (0/1) [0]")
+    perf_group.add_argument("--workers", type=int, default=1, metavar="INT",
+                            help="Number of parallel workers (use 4+ for large files >5GB) [1]")
+    perf_group.add_argument("--chunk_mb", type=int, default=32, metavar="INT",
+                            help="Chunk size in MB for parallel processing [32]")
+    perf_group.add_argument("--profile", type=int, default=0, metavar="INT",
+                            help="Enable profiling (0/1) [0]")
 
     args = parser.parse_args()
     
