@@ -201,7 +201,7 @@ def main():
     quality_group.add_argument("--qual_scale", type=str, metavar="STR",
                                choices=['log', 'log_reverse', 'log_custom', 'one_hot', 'custom'], 
                                default='one_hot',
-                               help="Quality scaling method [one_hot]")
+                               help="Quality scaling method. Available options: {'log', 'log_reverse', 'log_custom', 'one_hot', 'custom'} [one_hot]")
     quality_group.add_argument("--extract_qual", type=int, default=1, metavar="INT",
                                help="For FASTQ: extract quality scores (0/1) [1]")
     quality_group.add_argument("--phred_off", type=int, default=33, metavar="INT",
@@ -219,14 +219,14 @@ def main():
     paired_end.add_argument("--paired_mode", type=str, metavar="STR",
                             choices=['same_file', 'separate_files'], 
                             default='same_file',
-                            help="Output mode for paired-end reads [same_file]")
+                            help="Output mode for paired-end reads. Available options: {'same_file', 'separate_files'} [same_file]")
 
     # Sequencer Group
     seq_group = parser.add_argument_group("SEQUENCER & HEADERS")
     seq_group.add_argument("--seq_type", type=str, metavar="STR",
                            choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
                            default='none',
-                           help="Sequencer type for header compression [none]")
+                           help="Sequencer type for header compression. Available options: {'none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'} [none]")
     seq_group.add_argument("--compress_hdr", type=int, default=0, metavar="INT",
                            help="Compress FASTQ headers on-the-fly (0/1) [0]")
     seq_group.add_argument("--sra_acc", type=str, default=None, metavar="STR",
