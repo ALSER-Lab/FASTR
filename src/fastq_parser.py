@@ -7,7 +7,7 @@ from header_compression import compress_header
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray,
                                     phred_map: Optional[np.ndarray], compress_headers: bool,
                                     sequencer_type: str, paired_end: bool, keep_bases: bool,
-                                    binary_bases: bool, keep_quality: bool, binary_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], int]:
+                                    keep_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], int]:
     """
     Parse FASTQ records from a buffer using vectorized operations.
     Returns (records, leftover_buffer, current_flowcell_metadata, num_records)
@@ -30,13 +30,6 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     
     # Pre-create binary map ONCE if needed
     binary_map = None
-    if binary_bases:
-        binary_map = np.zeros(128, dtype=np.uint8)
-        binary_map[ord('A')] = 0
-        binary_map[ord('T')] = 1
-        binary_map[ord('C')] = 2
-        binary_map[ord('G')] = 3
-        binary_map[ord('N')] = 4
     
     # Process in batches to avoid numpy split overhead
     BATCH_SIZE = 10000  # Process 10k records at a time
