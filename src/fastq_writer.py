@@ -7,7 +7,7 @@ from quality_processing import apply_quality_to_bases
 def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
                                quality_scaling: str, custom_formula: Optional[str],
                                phred_alphabet_max: int, min_quality: int, keep_bases: bool,
-                               binary_bases: bool, binary: bool, keep_quality: bool,
+                               binary: bool, keep_quality: bool,
                                remove_repeating_header: bool, compress_headers: bool,
                                BYTE_LOOKUP: np.ndarray):
     """
@@ -28,7 +28,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
     if len(all_quals) > 0 and quality_scaling != 'none':
         flat_quals = np.concatenate(all_quals).astype(np.uint8)
         
-        if not keep_bases and not binary_bases:
+        if not keep_bases:
             # Apply scaling on flattened arrays
             flat_mapped = apply_quality_to_bases(
                 flat_mapped, flat_quals, base_map, quality_scaling,
@@ -42,8 +42,6 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         
         if keep_bases:
             flat_mapped[low_quality_mask] = ord('N')  # Keep as ASCII
-        elif binary_bases:
-            flat_mapped[low_quality_mask] = 4  # N = 4 in binary encoding
         else:
             flat_mapped[low_quality_mask] = base_map[ord('N')]  # Convert to numeric
     
@@ -71,8 +69,6 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         else:
             if keep_bases:
                 outfile.write(seq_data.tobytes())  # Write ASCII directly
-            elif binary_bases:
-                outfile.write(b''.join(BYTE_LOOKUP[seq_data]))  # Write binary bases as text
             else:
                 outfile.write(b''.join(BYTE_LOOKUP[seq_data]))  # Convert numbers to text
         

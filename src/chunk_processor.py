@@ -7,8 +7,8 @@ from fastq_writer import process_and_write_records
 
 
 def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
-                        sequencer_type, paired_end, keep_bases, binary_bases,
-                        keep_quality, binary_quality, quality_scaling, custom_formula,
+                        sequencer_type, paired_end, keep_bases, 
+                        keep_quality, quality_scaling, custom_formula,
                         phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
                         remove_repeating_header):
     """
@@ -25,7 +25,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
         records, _, metadata, count = parse_fastq_records_from_buffer(
             buffer, start_index, base_map, phred_map,
             compress_headers, sequencer_type, paired_end,
-            keep_bases, binary_bases, keep_quality, binary_quality
+            keep_bases, keep_quality
         )
         
         print(f"Worker parsed {count} records from chunk {chunk_id}")
@@ -37,7 +37,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
             process_and_write_records(
                 records, output_buffer, base_map, quality_scaling,
                 custom_formula, phred_alphabet_max, min_quality, keep_bases,
-                binary_bases, binary, keep_quality,
+                binary, keep_quality,
                 remove_repeating_header, compress_headers, BYTE_LOOKUP
             )
         
