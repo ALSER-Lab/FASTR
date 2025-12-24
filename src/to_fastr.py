@@ -151,7 +151,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     metadata_lines.append(f"#COMMON:{metadata_line}\n")
                     metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                    metadata_lines.append(f"#{equation}\n")
+                    metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
                     metadata_lines.append(f"#RANGE:{start_idx}-{end_idx}\n")
             else:
                 # Single flowcell
@@ -160,7 +160,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     metadata_lines.append(f"#COMMON:{metadata_line}\n")
                 metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                 equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                metadata_lines.append(f"#{equation}\n")
+                metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
             
             # Write metadata and pad remaining space
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')

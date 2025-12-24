@@ -146,9 +146,6 @@ def format_metadata_header(common_metadata: Dict, sequencer_type: str) -> str:
         return f"{common_metadata.get('instrument', '')}:{common_metadata.get('run_id', '')}:{common_metadata.get('flowcell', '')}:{common_metadata.get('lane', '')}"
     elif sequencer_type in ['pacbio', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
         movie = common_metadata.get('movie', '')
-        read_type = common_metadata.get('read_type', '')
-        if read_type:
-            return f"{movie}:{read_type}"
         return movie
     elif sequencer_type == 'ont':
         parts = []
@@ -158,6 +155,8 @@ def format_metadata_header(common_metadata: Dict, sequencer_type: str) -> str:
         return ':'.join(parts)
     elif sequencer_type == 'srr':
         return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}"
+    elif sequencer_type == 'old_illumina':
+        return f"{common_metadata.get('instrument', '')}:{common_metadata.get('lane', '')}"
     else:
         return ''
 
