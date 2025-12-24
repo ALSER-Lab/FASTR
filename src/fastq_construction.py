@@ -80,8 +80,8 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     line_idx += 1
                     
                     scaling_equation = 'x'
-                    if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER') and not lines[line_idx].startswith('#COMMON:'):
-                        scaling_equation = lines[line_idx][1:].strip()
+                    if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
+                        scaling_equation = lines[line_idx].split(':', 1)[1].strip()
                         print(f"Found equation: {scaling_equation}")
                         line_idx += 1
                     
@@ -116,8 +116,8 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         actual_data_start = first_header if first_header > 0 else 0
         return metadata_blocks, actual_data_start, sra_accession
     
-    # Mode 0 and 2: Header compression enabled
-    first_seq_marker = data.find(b'<') if mode == 2 else data.find(b'\n@')
+    # Mode 0, 2, and 3: Header compression enabled
+    first_seq_marker = data.find(b'<') if mode in [2, 3] else data.find(b'\n@')
     if first_seq_marker == -1:
         return metadata_blocks, 0, sra_accession
     
@@ -172,18 +172,16 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         
         if line.startswith('#SEQUENCER:'):
             sequencer_type = line.split(':', 1)[1].strip()
-            
+                    
             common_metadata_str = None
             if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
                 common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
-            
-            line_idx += 1
-            
-            scaling_equation = 'x'
-            if line_idx < len(lines) and lines[line_idx].startswith('#') and not lines[line_idx].startswith('#SEQUENCER') and not lines[line_idx].startswith('#COMMON:'):
-                scaling_equation = lines[line_idx][1:].strip()
-                print(f"Found equation: {scaling_equation}")
                 line_idx += 1
+                scaling_equation = 'x'
+                if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
+                    scaling_equation = lines[line_idx].split(':', 1)[1].strip()
+                    print(f"Found equation: {scaling_equation}")
+                    line_idx += 1
             
             if common_metadata_str:
                 common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
@@ -302,6 +300,12 @@ def parse_common_metadata(metadata_str: str, sequencer_type: str) -> Dict:
                 key, value = part.split('=', 1)
                 kvs[key] = value
         return kvs
+    elif sequencer_type == 'old_illumina':
+        parts = metadata_str.split(':')
+        return {
+            'instrument': parts[0] if len(parts) > 0 else '',
+            'lane': parts[1] if len(parts) > 1 else ''
+        }
     elif sequencer_type == 'srr':
         match = re.match(r'([A-Z]+)(\d+)', metadata_str)
         if match:
@@ -368,6 +372,10 @@ def reconstruct_header(unique_id: str, common_metadata: Dict, sequencer_type: st
             header = f"@{common_metadata['prefix']}{common_metadata['accession']}.{parts[0]} {parts[1]}"
         else:
             header = f"@{unique_id}"
+    elif sequencer_type == 'old_illumina':
+        # unique_id format: tile:x:y#index/read
+        # We expect the unique_id to already contain the # and / from the parser
+        header = f"@{common_metadata['instrument']}:{common_metadata['lane']}:{unique_id}"
     
     else:
         # If we get type of 'none', check if we have SRA accession
@@ -400,19 +408,19 @@ def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) ->
     
     # When we have quality-scaled values, we need to map them to their initial base range
     # A: 1-63
-    for i in range(1, 63):
+    for i in range(1, 64):
         reverse_map[i] = ord('A')
     
     # T: 65-127
-    for i in range(65, 127):
+    for i in range(65, 128):
         reverse_map[i] = ord('T')
 
     # C: 129-191
-    for i in range(129, 192):
+    for i in range(129, 193):
         reverse_map[i] = ord('C')
     
     # G: 193-255
-    for i in range(193, 255):
+    for i in range(193, 256):
         reverse_map[i] = ord('G')
     
     return reverse_map
@@ -491,6 +499,25 @@ def build_inverse_quality_table(formula_func, max_phred, max_range=63):
 def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> bytes:
     """Convert numeric quality scores to ASCII string"""
     return bytes((quality_scores + phred_offset).astype(np.uint8))
+
+def format_common_metadata(common_metadata: Dict, sequencer_type: str) -> str:
+    """Format common metadata dict back into string format"""
+    if sequencer_type == 'illumina':
+        return f"{common_metadata.get('instrument', '')}:{common_metadata.get('run_id', '')}:{common_metadata.get('flowcell', '')}:{common_metadata.get('lane', '')}"
+    elif sequencer_type in ['pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
+        result = common_metadata.get('movie', '')
+        if 'read_type' in common_metadata:
+            result += f":{common_metadata['read_type']}"
+        return result
+    elif sequencer_type == 'ont':
+        parts = [f"{k}={v}" for k, v in common_metadata.items()]
+        return ':'.join(parts)
+    elif sequencer_type == 'old_illumina':
+        return f"{common_metadata.get('instrument', '')}:{common_metadata.get('lane', '')}"
+    elif sequencer_type == 'srr':
+        return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}"
+    else:
+        return ''
 
 
 def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges, 
@@ -615,6 +642,51 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                             i += 1
                 else:
                     i += 1
+           # Mode 3: No headers at all, just <bases on each line
+        elif mode == 3:
+            lines = chunk_binary.split(b'\n')
+            for line in lines:
+                if not line.startswith(b'<'):
+                    continue
+                
+                seq_data = line[1:]  # Skip '<'
+                if len(seq_data) == 0:
+                    continue
+                
+                # Check if we need to switch metadata blocks
+                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                    next_metadata = metadata_blocks[current_metadata_idx + 1]
+                    if sequence_count >= next_metadata.start_index:
+                        current_metadata = next_metadata
+                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                        current_metadata_idx += 1
+                
+                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                bases_array = reverse_map[seq_array]
+                bases = bases_array.tobytes().decode('ascii')
+                
+                # Generate header from common metadata + sequence number
+                if current_metadata:
+                    metadata_str = format_common_metadata(
+                        current_metadata.common_metadata,
+                        current_metadata.sequencer_type
+                    )
+                    header = f"@{metadata_str}"
+                elif sra_accession:
+                    header = f"@{sra_accession}"
+                
+                # Reconstruct quality
+                if current_inverse_table is not None:
+                    quality_scores = reverse_scaling_to_quality(
+                        seq_array, base_ranges, reverse_map,
+                        current_inverse_table, max_phred=phred_alphabet_max
+                    )
+                    quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                else:
+                    quality_string = 'I' * len(bases)
+                
+                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
+                sequence_count += 1
         
         # Mode 2: Headers compressed, bases as binary (original behavior)
         else:
@@ -690,9 +762,9 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                                               current_metadata.sequencer_type, pair_number, sra_accession)
                 else:
                     if sra_accession:
-                        header = f"@{sra_accession}.{sequence_count}"
+                        header = f"@{sra_accession}"
                     else:
-                        header = f"@seq_{sequence_count}"
+                        header = f"@seq"
                 
                 if current_inverse_table is not None:
                     quality_scores = reverse_scaling_to_quality(
@@ -707,6 +779,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                 
                 sequence_count += 1
                 pos = seq_end + 1
+            
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
         return (chunk_id, ''.join(output_buffer), sequence_count - start_seq_idx)
@@ -725,11 +798,6 @@ def reconstruct_fastq(input_path: str, output_path: str,
                      mode: int = 2):
     """
     Reconstruct FASTQ file from FASTR using parallel processing.
-    
-    Modes:
-    0 - Only headers compressed (bases as text, quality preserved)
-    1 - Only bases compressed (headers intact, bases as binary)
-    2 - Headers compressed + bases as binary (full compression)
     """
     print(f"Reading FASTR: {input_path}")
     print(f"Reconstruction mode: {mode}")
@@ -756,7 +824,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
     
     inverse_tables = []
-    if mode in [1, 2]:
+    if mode in [1, 2, 3]:
         if metadata_blocks:
             for mb in metadata_blocks:
                 formula_func = build_formula_func(mb.scaling_equation)
@@ -788,7 +856,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
             chunk_end = min(pos + chunk_size_bytes, len(buffer))
             
             # Find boundary based on mode
-            if mode == 2:
+            if mode in [2, 3]:
                 # Mode 2: Split on '<' markers
                 search_start = max(pos, chunk_end - 1000)
                 last_marker = buffer.rfind(b'<', search_start, chunk_end)
@@ -863,8 +931,8 @@ def main():
     parser.add_argument("output_path", type=str, help="Output FASTQ file path")
     
     # Mode selection
-    parser.add_argument("--mode", type=int, default=2, choices=[0, 1, 2],
-                        help="Conversion mode: 0=headers only, 1=bases only, 2=both (default: 2)")
+    parser.add_argument("--mode", type=int, default=2, choices=[0, 1, 2, 3],
+                        help="Conversion mode: 0=headers only, 1=bases only, 2=both, 3=no repeating headers (default: 2)")
     
     # Quality parameters
     parser.add_argument("--phred_offset", type=int, default=33,
