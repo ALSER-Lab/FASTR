@@ -7,14 +7,15 @@ from header_compression import compress_header
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray,
                                     phred_map: Optional[np.ndarray], compress_headers: bool,
                                     sequencer_type: str, paired_end: bool, keep_bases: bool,
-                                    keep_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], int]:
+                                    keep_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], Optional[str], int]:
     """
     Parse FASTQ records from a buffer using vectorized operations.
-    Returns (records, leftover_buffer, current_flowcell_metadata, num_records)
+    Returns (records, leftover_buffer, current_flowcell_metadata, structure_template, num_records)
     """
     
     records = []
     current_flowcell_metadata = None
+    structure_template = None
     lines = buffer.split(b'\n')
     
     # Check if we have complete 4-line records
@@ -24,7 +25,7 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     num_complete_records = len(lines) // 4
     
     if num_complete_records == 0:
-        return records, buffer, current_flowcell_metadata, 0
+        return records, buffer, current_flowcell_metadata, structure_template, 0
     
     leftover = b'\n'.join(lines[num_complete_records * 4:])
     
@@ -91,9 +92,12 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             
             # Header compression
             if compress_headers and sequencer_type != 'none':
-                common, unique_id = compress_header(header_str, sequencer_type)
+                common, unique_id, structure = compress_header(header_str, sequencer_type)
                 if common:
                     current_flowcell_metadata = common
+                
+                if structure and structure_template is None:
+                    structure_template = structure
                 
                 if paired_end and pair_number > 0:
                     header = f"@{unique_id}/{pair_number}\n".encode('utf-8')
@@ -115,4 +119,4 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             )
             records.append(record)
     
-    return records, leftover, current_flowcell_metadata, num_complete_records
+    return records, leftover, current_flowcell_metadata, structure_template, num_complete_records

@@ -48,6 +48,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     # For tracking flowcells and sequences
     flowcell_metadata_list = []
     current_flowcell_metadata = None
+    structure_template = None
     flowcell_start_index = 0
     total_sequences = 0
     
@@ -89,13 +90,17 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             
             # Use imap to process chunks as they're read (streaming)
             # chunksize=1 ensures order is preserved
-            for chunk_id, processed_bytes, metadata, count in pool.imap(
+            for chunk_id, processed_bytes, metadata, structure, count in pool.imap(
                 worker_func, 
                 chunk_generator(fastq_path, chunk_size_bytes), 
                 chunksize=1
             ):
                 # Write immediately as each chunk completes
                 outfile.write(processed_bytes)
+                
+                # Capture structure template from first chunk
+                if structure and structure_template is None:
+                    structure_template = structure
                 
                 # Track flowcell metadata
                 if metadata:
@@ -107,7 +112,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                             flowcell_metadata_list.append((
                                 current_flowcell_metadata.copy(),
                                 flowcell_start_index,
-                                total_sequences - 1
+                                total_sequences - 1,
+                                structure_template
                             ))
                             current_flowcell_metadata = metadata
                             flowcell_start_index = total_sequences
@@ -125,15 +131,16 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             flowcell_metadata_list.append((
                 current_flowcell_metadata.copy(),
                 flowcell_start_index,
-                total_sequences - 1
+                total_sequences - 1,
+                structure_template
             ))
         elif current_flowcell_metadata:
-            flowcell_metadata_list.append((current_flowcell_metadata, 0, total_sequences - 1))
+            flowcell_metadata_list.append((current_flowcell_metadata, 0, total_sequences - 1, structure_template))
         
         # Print flowcell summary
         if multiple_flowcells and len(flowcell_metadata_list) > 1:
             print(f"\nDetected {len(flowcell_metadata_list)} flowcells:")
-            for idx, (metadata, start, end) in enumerate(flowcell_metadata_list):
+            for idx, (metadata, start, end, _) in enumerate(flowcell_metadata_list):
                 fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
@@ -146,18 +153,16 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             
             if multiple_flowcells and len(flowcell_metadata_list) > 0:
                 # Build metadata lines for multiple flowcells
-                for metadata, start_idx, end_idx in flowcell_metadata_list:
-                    metadata_line = format_metadata_header(metadata, sequencer_type)
-                    metadata_lines.append(f"#COMMON:{metadata_line}\n")
+                for metadata, start_idx, end_idx, struct in flowcell_metadata_list:
+                    metadata_lines.append(f"#STRUCTURE:{struct}\n")
                     metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                     metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
                     metadata_lines.append(f"#RANGE:{start_idx}-{end_idx}\n")
             else:
                 # Single flowcell
-                if current_flowcell_metadata:
-                    metadata_line = format_metadata_header(current_flowcell_metadata, sequencer_type)
-                    metadata_lines.append(f"#COMMON:{metadata_line}\n")
+                if structure_template:
+                    metadata_lines.append(f"#STRUCTURE:{structure_template}\n")
                 metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
                 equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
                 metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
@@ -173,6 +178,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             outfile.seek(end_position)  # Return to end
     
     print(f"Total sequences written: {total_sequences:,}")
+
 
 def main():
     parser = argparse.ArgumentParser(

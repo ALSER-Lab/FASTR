@@ -11,7 +11,7 @@ from functools import partial
 @dataclass
 class MetadataBlock:
     """Stores metadata for a flowcell/run at top of file"""
-    common_metadata: Dict
+    structure_template: str
     sequencer_type: str
     scaling_equation: str
     start_index: int
@@ -48,7 +48,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             line_idx = 0
             
             # Check for SRA accession
-            if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'COMMON:']):
+            if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'STRUCTURE:']):
                 sra_accession = lines[0][1:]
                 print(f"Found SRA accession: {sra_accession}")
                 line_idx = 1
@@ -64,18 +64,18 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                 if line.startswith('<'):
                     break
                 
-                if line.startswith('#COMMON:'):
-                    common_metadata_str = line.split(':', 1)[1].strip()
-                    print(f"Found COMMON metadata: {common_metadata_str}")
+                if line.startswith('#STRUCTURE:'):
+                    structure_template = line.split(':', 1)[1].strip()
+                    print(f"Found STRUCTURE metadata: {structure_template}")
                     line_idx += 1
                     continue
                 
                 if line.startswith('#SEQUENCER:'):
                     sequencer_type = line.split(':', 1)[1].strip()
                     
-                    common_metadata_str = None
-                    if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
-                        common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
+                    structure_template = None
+                    if line_idx > 0 and lines[line_idx - 1].startswith('#STRUCTURE:'):
+                        structure_template = lines[line_idx - 1].split(':', 1)[1].strip()
                     
                     line_idx += 1
                     
@@ -85,25 +85,17 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                         print(f"Found equation: {scaling_equation}")
                         line_idx += 1
                     
-                    if common_metadata_str:
-                        common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
-                        print(f"Parsed common metadata: {common_metadata}")
-                    elif sra_accession:
-                        common_metadata = parse_common_metadata(sra_accession, 'srr')
-                    else:
-                        common_metadata = {}
-                    
                     start_index = 0
                     end_index = -1
                     
-                    if line_idx < len(lines) and lines[line_idx].startswith('@RANGE:'):
-                        range_str = lines[line_idx][7:]
+                    if line_idx < len(lines) and lines[line_idx].startswith('#RANGE:'):
+                        range_str = lines[line_idx].split(':', 1)[1].strip()
                         start_index, end_index = map(int, range_str.split('-'))
                         print(f"Found range: {start_index}-{end_index}")
                         line_idx += 1
                     
                     metadata_blocks.append(MetadataBlock(
-                        common_metadata=common_metadata,
+                        structure_template=structure_template or "",
                         sequencer_type=sequencer_type,
                         scaling_equation=scaling_equation,
                         start_index=start_index,
@@ -144,7 +136,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     line_idx = 0
     
     # Check for SRA accession
-    if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'COMMON:']):
+    if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'STRUCTURE:']):
         sra_accession = lines[0][1:]
         print(f"Found SRA accession: {sra_accession}")
         line_idx = 1
@@ -153,29 +145,29 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     while line_idx < len(lines):
         line = lines[line_idx]
         
-        if line.startswith('@') and not line.startswith('@RANGE'):
+        if line.startswith('@') and not line.startswith('#RANGE:'):
             test_content = line[1:]
             if re.match(r'^\d+[:/]\d+$', test_content):
                 print(f"Detected sequence header at line {line_idx}: {line}")
                 break
-            print(f"WARNING: Found @ line that's not @RANGE: {line}")
+            print(f"WARNING: Found @ line that's not #RANGE: {line}")
             break
         
         if line.startswith('<'):
             break
         
-        if line.startswith('#COMMON:'):
-            common_metadata_str = line.split(':', 1)[1].strip()
-            print(f"Found COMMON metadata: {common_metadata_str}")
+        if line.startswith('#STRUCTURE:'):
+            structure_template = line.split(':', 1)[1].strip()
+            print(f"Found STRUCTURE metadata: {structure_template}")
             line_idx += 1
             continue
         
         if line.startswith('#SEQUENCER:'):
             sequencer_type = line.split(':', 1)[1].strip()
                     
-            common_metadata_str = None
-            if line_idx > 0 and lines[line_idx - 1].startswith('#COMMON:'):
-                common_metadata_str = lines[line_idx - 1].split(':', 1)[1].strip()
+            structure_template = None
+            if line_idx > 0 and lines[line_idx - 1].startswith('#STRUCTURE:'):
+                structure_template = lines[line_idx - 1].split(':', 1)[1].strip()
                 line_idx += 1
                 scaling_equation = 'x'
                 if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
@@ -183,25 +175,17 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     print(f"Found equation: {scaling_equation}")
                     line_idx += 1
             
-            if common_metadata_str:
-                common_metadata = parse_common_metadata(common_metadata_str, sequencer_type)
-                print(f"Parsed common metadata: {common_metadata}")
-            elif sra_accession:
-                common_metadata = parse_common_metadata(sra_accession, 'srr')
-            else:
-                common_metadata = {}
-            
             start_index = 0
             end_index = -1
             
-            if line_idx < len(lines) and lines[line_idx].startswith('@RANGE:'):
-                range_str = lines[line_idx][7:]
+            if line_idx < len(lines) and lines[line_idx].startswith('#RANGE:'):
+                range_str = lines[line_idx].split(':', 1)[1].strip()
                 start_index, end_index = map(int, range_str.split('-'))
                 print(f"Found range: {start_index}-{end_index}")
                 line_idx += 1
             
             metadata_blocks.append(MetadataBlock(
-                common_metadata=common_metadata,
+                structure_template=structure_template or "",
                 sequencer_type=sequencer_type,
                 scaling_equation=scaling_equation,
                 start_index=start_index,
@@ -211,6 +195,41 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             line_idx += 1
     
     return metadata_blocks, actual_data_start, sra_accession
+
+
+def get_delimiter_for_sequencer(sequencer_type: str) -> str:
+    """Get the delimiter character used by each sequencer type"""
+    if sequencer_type == 'illumina' or sequencer_type == 'old_illumina':
+        return ':'
+    elif sequencer_type.startswith('pacbio'):
+        return '/'
+    elif sequencer_type == 'ont':
+        return ':'
+    elif sequencer_type == 'srr':
+        return '.'
+    return ':'
+
+
+def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_type: str, pair_number: int = 0) -> str:
+    """
+    Reconstruct full header from structure template and unique ID.
+    """
+    delimiter = get_delimiter_for_sequencer(sequencer_type)
+    
+    # Split unique_id by the appropriate delimiter
+    unique_parts = unique_id.split(delimiter)
+    
+    # Replace placeholders in structure
+    result = structure
+    for i, part in enumerate(unique_parts, 1):
+        placeholder = f"{{REPEATING_{i}}}"
+        result = result.replace(placeholder, part)
+    
+    # Add pair number if needed
+    if pair_number > 0:
+        result = f"{result}/{pair_number}"
+    
+    return f"@{result}"
 
 
 def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray:
@@ -275,124 +294,6 @@ def build_formula_func(formula: str):
             return eval(cleaned, local)
 
     return formula_func
-
-def parse_common_metadata(metadata_str: str, sequencer_type: str) -> Dict:
-    """Parse common metadata string based on sequencer type"""
-    if sequencer_type == 'illumina':
-        parts = metadata_str.split(':')
-        return {
-            'instrument': parts[0] if len(parts) > 0 else '',
-            'run_id': parts[1] if len(parts) > 1 else '',
-            'flowcell': parts[2] if len(parts) > 2 else '',
-            'lane': parts[3] if len(parts) > 3 else ''
-        }
-    elif sequencer_type in ['pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
-        # Handle PacBio metadata: "movie:read_type" or just "movie"
-        parts = metadata_str.split(':')
-        result = {'movie': parts[0] if len(parts) > 0 else metadata_str}
-        if len(parts) > 1:
-            result['read_type'] = parts[1]
-        return result
-    elif sequencer_type == 'ont':
-        kvs = {}
-        for part in metadata_str.split(':'):
-            if '=' in part:
-                key, value = part.split('=', 1)
-                kvs[key] = value
-        return kvs
-    elif sequencer_type == 'old_illumina':
-        parts = metadata_str.split(':')
-        return {
-            'instrument': parts[0] if len(parts) > 0 else '',
-            'lane': parts[1] if len(parts) > 1 else ''
-        }
-    elif sequencer_type == 'srr':
-        match = re.match(r'([A-Z]+)(\d+)', metadata_str)
-        if match:
-            return {'prefix': match.group(1), 'accession': match.group(2)}
-        return {}
-    else:
-        return {}
-
-
-def reconstruct_header(unique_id: str, common_metadata: Dict, sequencer_type: str, 
-                      pair_number: int = 0, sra_accession: Optional[str] = None) -> str:
-    """Reconstruct full FASTQ header from FASTR"""
-    if sequencer_type == 'illumina':
-        # unique_id format: tile:x:y:read:filtered:control:barcode
-        parts = unique_id.split(':')
-        if len(parts) >= 7:
-            header = f"@{common_metadata['instrument']}:{common_metadata['run_id']}:{common_metadata['flowcell']}:{common_metadata['lane']}:{parts[0]}:{parts[1]}:{parts[2]} {parts[3]}:{parts[4]}:{parts[5]}:{parts[6]}"
-        else:
-            header = f"@{unique_id}"
-    
-    elif sequencer_type == 'pacbio_ccs':
-        # Format: @movie/zmw/ccs
-        movie = common_metadata.get('movie', '')
-        header = f"@{movie}/{unique_id}/ccs"
-    
-    elif sequencer_type == 'pacbio_hifi':
-        # Format: @movie/zmw/ccs or @movie/zmw/ccs/fwd etc
-        movie = common_metadata.get('movie', '')
-        # unique_id might already include suffix like "123/fwd"
-        if '/ccs' in unique_id:
-            header = f"@{movie}/{unique_id}"
-        else:
-            header = f"@{movie}/{unique_id}/ccs"
-    
-    elif sequencer_type == 'pacbio_subread':
-        # Format: @movie/zmw/start_end
-        movie = common_metadata.get('movie', '')
-        header = f"@{movie}/{unique_id}"
-    
-    elif sequencer_type == 'pacbio_clr':
-        # Format: @movie/zmw/start_end
-        movie = common_metadata.get('movie', '')
-        header = f"@{movie}/{unique_id}"
-    
-    elif sequencer_type == 'ont':
-        # unique_id format: read_id:key=value:key=value etc
-        parts = unique_id.split(':', 1)
-        read_id = parts[0]
-        
-        # Reconstruct w/ common metadata
-        metadata_parts = []
-        for key, value in common_metadata.items():
-            metadata_parts.append(f"{key}={value}")
-        
-        if len(parts) > 1:
-            metadata_parts.append(parts[1])
-        
-        header = f"@{read_id} {' '.join(metadata_parts)}"
-    
-    elif sequencer_type == 'srr':
-        # unique_id format: read_index:spot
-        parts = unique_id.split(':')
-        if len(parts) >= 2:
-            header = f"@{common_metadata['prefix']}{common_metadata['accession']}.{parts[0]} {parts[1]}"
-        else:
-            header = f"@{unique_id}"
-    elif sequencer_type == 'old_illumina':
-        # unique_id format: tile:x:y#index/read
-        # We expect the unique_id to already contain the # and / from the parser
-        header = f"@{common_metadata['instrument']}:{common_metadata['lane']}:{unique_id}"
-    
-    else:
-        # If we get type of 'none', check if we have SRA accession
-        if sra_accession:
-            # Parse unique_id as read_num:pair_num
-            parts = unique_id.split(':')
-            if len(parts) >= 2:
-                header = f"@{sra_accession}.{parts[0]} {parts[1]}"
-            else:
-                header = f"@{sra_accession}.{unique_id}"
-        else:
-            header = f"@{unique_id}"
-    
-    if pair_number > 0 and f"/{pair_number}" not in header and f" {pair_number}" not in header:
-        header += f"/{pair_number}"
-    
-    return header
 
 
 def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) -> np.ndarray:
@@ -500,25 +401,6 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
     """Convert numeric quality scores to ASCII string"""
     return bytes((quality_scores + phred_offset).astype(np.uint8))
 
-def format_common_metadata(common_metadata: Dict, sequencer_type: str) -> str:
-    """Format common metadata dict back into string format"""
-    if sequencer_type == 'illumina':
-        return f"{common_metadata.get('instrument', '')}:{common_metadata.get('run_id', '')}:{common_metadata.get('flowcell', '')}:{common_metadata.get('lane', '')}"
-    elif sequencer_type in ['pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr']:
-        result = common_metadata.get('movie', '')
-        if 'read_type' in common_metadata:
-            result += f":{common_metadata['read_type']}"
-        return result
-    elif sequencer_type == 'ont':
-        parts = [f"{k}={v}" for k, v in common_metadata.items()]
-        return ':'.join(parts)
-    elif sequencer_type == 'old_illumina':
-        return f"{common_metadata.get('instrument', '')}:{common_metadata.get('lane', '')}"
-    elif sequencer_type == 'srr':
-        return f"{common_metadata.get('prefix', '')}{common_metadata.get('accession', '')}"
-    else:
-        return ''
-
 
 def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges, 
                                        metadata_blocks, inverse_tables, 
@@ -608,9 +490,13 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                     else:
                         unique_id = header_content
                     
-                    if current_metadata:
-                        header = reconstruct_header(unique_id, current_metadata.common_metadata,
-                                                  current_metadata.sequencer_type, pair_number, sra_accession)
+                    if current_metadata and current_metadata.structure_template:
+                        header = reconstruct_header_from_structure(
+                            current_metadata.structure_template,
+                            unique_id,
+                            current_metadata.sequencer_type,
+                            pair_number
+                        )
                     else:
                         header = f"@{unique_id}"
                     
@@ -642,7 +528,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                             i += 1
                 else:
                     i += 1
-           # Mode 3: No headers at all, just <bases on each line
+        # Mode 3: No headers at all, just <bases on each line
         elif mode == 3:
             lines = chunk_binary.split(b'\n')
             for line in lines:
@@ -665,15 +551,13 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                 bases_array = reverse_map[seq_array]
                 bases = bases_array.tobytes().decode('ascii')
                 
-                # Generate header from common metadata + sequence number
-                if current_metadata:
-                    metadata_str = format_common_metadata(
-                        current_metadata.common_metadata,
-                        current_metadata.sequencer_type
-                    )
-                    header = f"@{metadata_str}"
+                # Generate header from structure template
+                if current_metadata and current_metadata.structure_template:
+                    header = f"@{current_metadata.structure_template}"
                 elif sra_accession:
                     header = f"@{sra_accession}"
+                else:
+                    header = "@seq"
                 
                 # Reconstruct quality
                 if current_inverse_table is not None:
@@ -757,9 +641,13 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                             else:
                                 unique_id = header_content
                 
-                if unique_id and current_metadata:
-                    header = reconstruct_header(unique_id, current_metadata.common_metadata,
-                                              current_metadata.sequencer_type, pair_number, sra_accession)
+                if unique_id and current_metadata and current_metadata.structure_template:
+                    header = reconstruct_header_from_structure(
+                        current_metadata.structure_template,
+                        unique_id,
+                        current_metadata.sequencer_type,
+                        pair_number
+                    )
                 else:
                     if sra_accession:
                         header = f"@{sra_accession}"
@@ -817,6 +705,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
         print(f"Found {len(metadata_blocks)} metadata block(s)")
         for i, mb in enumerate(metadata_blocks):
             print(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
+            if mb.structure_template:
+                print(f"           structure: {mb.structure_template}")
     
     if sra_accession:
         print(f"SRA Accession: {sra_accession}")
