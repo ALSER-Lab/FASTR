@@ -1,0 +1,65 @@
+@SRR9876543.1 M01368:85:000000000-A6LPR:1:1101:13854:1938 length=62
+GATCGGAAGAGCACACGTCTGAACTCCAGTCACATGTAATCTCGTATGCCGTCTTCTGCTTG
++
+DDDDDHIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+@SRR9876543.2 M01368:85:000000000-A6LPR:1:1101:14251:2104 1:N:0:1 length=62
+GATCGGAAGAGCACACGTCTGAACTCCAGTCACATGTAATCTCGTATGCCGTCTTCTGCTTG
++
+DDDDDHIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+@SRR9876543.3/1 M01368:85:000000000-A6LPR:1:1101:18241:3412 1:N:0:1 length=62
+GATCGGAAGAGCACACGTCTGAACTCCAGTCACATGTAATCTCGTATGCCGTCTTCTGCTTG
++
+DDDDDHIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+@SRR9876543.3/2 M01368:85:000000000-A6LPR:1:1101:19424:5123 length=62
+GATCGGAAGAGCACACGTCTGAACTCCAGTCACATGTAATCTCGTATGCCGTCTTCTGCTTG
++
+DDDDDHIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+@SRR9876543.4 4 M01368:85:000000000-A6LPR:1:1101:21521:6514 length=62s
+GATCGGAAGAGCACACGTCTGAACTCCAGTCACATGTAATCTCGTATGCCGTCTTCTGCTTG
++
+DDDDDHIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+
+
+Typically present:
+Accession number
+Read number
+Read Length
+
+
+Optional (always between the read number and the read length):
+Paired-end information  (/1 or /2)
+Space then read number is repeated again (or another read number that was originally provided by submitter)
+Space then illumina information:
+instrument
+run number
+flowcell ID
+lane
+tile
+x-pos
+y-pos
+Then space then:
+read number (1 or 2)
+is filtered (Y/N)
+control number
+index sequence
+
+Even the colon-delimited structure itself (some Illumina FASTQs violate it)
+
+
+
+Field	Changes read-to-read?
+Accession number	❌ No
+Read number	✅ Yes
+Read length	✅ Yes, but can be recalculated
+read number (/1 or /2)	✅ Yes,  but can  be inferred if it is alternating, or can be ignored if R1 and R2  are separated in two files
+instrument	❌ No
+run number	❌ No
+flowcell ID	❌ No
+lane	❌ No (within a lane)
+tile	✅ Yes
+x-pos	✅ Yes
+y-pos	✅ Yes
+read number (1/2)	⚠️ Between R1 and R2	Constant within R1 or R2 FASTQ
+is filtered	❌ No	Per cluster
+control number	❌ No	Usually 0
+index sequence	❌ No	Same for read pair
