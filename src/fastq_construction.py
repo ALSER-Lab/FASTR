@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from multiprocessing import Pool
 from functools import partial
+import mmap
 
 @dataclass
 class MetadataBlock:
@@ -16,6 +17,25 @@ class MetadataBlock:
     scaling_equation: str
     start_index: int
     end_index: int
+
+def find_structure_prefix(structure_template: str) -> str:
+    """
+    Extract the constant prefix from structure template before first {REPEATING_X}.
+    """
+    if not structure_template:
+        return ""
+    
+    # Find first occurrence of {REPEATING_
+    match = re.search(r'\{REPEATING_\d+\}', structure_template)
+    
+    if match:
+        prefix = structure_template[:match.start()] # Return everything before the first placeholder
+        if prefix.endswith(':') or prefix.endswith('/'): # Remove trailing delimiter if present
+            prefix = prefix[:-1]
+        return prefix
+    
+    return structure_template
+
 
 def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], int, Optional[str]]:
     """
@@ -206,7 +226,7 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
     elif sequencer_type == 'ont':
         return ':'
     elif sequencer_type == 'srr':
-        return '.'
+        return ':'
     return ':'
 
 
@@ -296,62 +316,38 @@ def build_formula_func(formula: str):
     return formula_func
 
 
-def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255) -> np.ndarray:
-    """Create reverse mapping array from binary values to bases"""
-    reverse_map = np.full(256, ord('N'), dtype=np.uint8)
-    
-    # map exact base vals
-    reverse_map[gray_N] = ord('N')
-    reverse_map[gray_A] = ord('A')
-    reverse_map[gray_T] = ord('T')
-    reverse_map[gray_C] = ord('C')
-    reverse_map[gray_G] = ord('G')
-    
-    # When we have quality-scaled values, we need to map them to their initial base range
-    # A: 1-63
-    for i in range(1, 64):
-        reverse_map[i] = ord('A')
-    
-    # T: 65-127
-    for i in range(65, 128):
-        reverse_map[i] = ord('T')
+def create_base_map():
+    base_table = np.zeros(256, dtype=np.int32)
+    base_table[1:64] = 1
+    base_table[65:128] = 65
+    base_table[129:192] = 129
+    base_table[193:256] = 193
+    return base_table
 
-    # C: 129-191
-    for i in range(129, 193):
-        reverse_map[i] = ord('C')
-    
-    # G: 193-255
-    for i in range(193, 256):
-        reverse_map[i] = ord('G')
+def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255):
+    reverse_map = np.full(256, ord('N'), dtype=np.uint8)
+    reverse_map[1:64] = ord('A')
+    reverse_map[65:128] = ord('T')
+    reverse_map[129:193] = ord('C')
+    reverse_map[193:256] = ord('G')
+    reverse_map[[gray_N, gray_A, gray_T, gray_C, gray_G]] = [ord('N'), ord('A'), ord('T'), ord('C'), ord('G')]
     
     return reverse_map
 
 def reverse_scaling_to_quality(binary_values: np.ndarray,
-                               base_ranges: dict, reverse_map: np.ndarray,
-                               inverse_table: np.ndarray,
-                               max_phred: int) -> np.ndarray:
+                                       subtract_table: np.ndarray,
+                                       inverse_table: np.ndarray,
+                                       max_phred: int) -> np.ndarray:
     """
     Reverse the scaled quality values from the 63-per-base scheme.
     Returns reconstructed quality scores (0..max_phred).
     """
-    
-    # Map binary values to bases
-    bases = reverse_map[binary_values]
-    
-    # Calculate y (scaled values 0-63) by subtracting base minimum
-    y = np.zeros_like(binary_values, dtype=np.int32)
-    for base_char, (lo, hi) in base_ranges.items():
-        mask = bases == ord(base_char)
-        if np.any(mask):
-            y[mask] = binary_values[mask] - lo
-    
-    # Clamp y is within valid range
-    # Weirdly enough np.clip clamps, not clips?
+    y = binary_values - subtract_table[binary_values]
     y = np.clip(y, 0, 63)
-    reconstructed_q = inverse_table[y] # Reconstruct quality scores w/ inverse lookup
-    reconstructed_q = np.clip(reconstructed_q, 0, max_phred)
     
-    return reconstructed_q
+    # Single inverse lookup
+    reconstructed_q = inverse_table[y]
+    return np.clip(reconstructed_q, 0, max_phred)
 
 def build_inverse_quality_table(formula_func, max_phred, max_range=63):
     """Function designed to build the inverse table separately in order to not be looped within reverse_scaling_to_quality"""
@@ -402,8 +398,8 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
     return bytes((quality_scores + phred_offset).astype(np.uint8))
 
 
-def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges, 
-                                       metadata_blocks, inverse_tables, 
+def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table, 
+                                       base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
                                        mode):
     """
@@ -449,7 +445,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                         # Reconstruct quality if inverse table available
                         if current_inverse_table is not None:
                             quality_scores = reverse_scaling_to_quality(
-                                seq_array, base_ranges, reverse_map,
+                                seq_array, subtract_table,
                                 current_inverse_table, max_phred=phred_alphabet_max
                             )
                             quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
@@ -528,49 +524,57 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                             i += 1
                 else:
                     i += 1
+
         # Mode 3: No headers at all, just <bases on each line
         elif mode == 3:
             lines = chunk_binary.split(b'\n')
-            for line in lines:
-                if not line.startswith(b'<'):
-                    continue
+            i = 0
+            while i < len(lines):
+                if lines[i].startswith(b'<'):
+                    # Binary sequence
+                    seq_data = lines[i][1:]  # Skip '<'
+                    
+                    # Check if we need to switch metadata blocks
+                    if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                        next_metadata = metadata_blocks[current_metadata_idx + 1]
+                        if sequence_count >= next_metadata.start_index:
+                            current_metadata = next_metadata
+                            current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                            current_metadata_idx += 1
+                    
+                    seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                    bases_array = reverse_map[seq_array]
+                    bases = bases_array.tobytes().decode('ascii')
+                    
+                    # Generate header from structure template prefix only
+                    if current_metadata and current_metadata.structure_template:
+                        # Extract only the constant prefix before first {REPEATING_X}
+                        header_prefix = find_structure_prefix(current_metadata.structure_template)
+                        header = f"@{header_prefix}" if header_prefix else "@seq"
+                    elif sra_accession:
+                        header = f"@{sra_accession}"
+                    else:
+                        header = "@seq"
+                    
+                    # Reconstruct quality
+                    if current_inverse_table is not None:
+                        quality_scores = reverse_scaling_to_quality(
+                            seq_array, subtract_table,
+                            current_inverse_table, max_phred=phred_alphabet_max
+                        )
+                        quality_string = bytes((quality_scores + phred_offset).astype(np.uint8)).decode('ascii')
+                    else:
+                        quality_string = 'I' * len(bases)
+                    
+                    output_buffer.append(f"{header}\n".encode('ascii'))
+                    output_buffer.append(bases.encode('ascii'))
+                    output_buffer.append(b"\n+\n")
+                    output_buffer.append(quality_string.encode('ascii'))
+                    output_buffer.append(b"\n")
+                    sequence_count += 1
                 
-                seq_data = line[1:]  # Skip '<'
-                if len(seq_data) == 0:
-                    continue
-                
-                # Check if we need to switch metadata blocks
-                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                    next_metadata = metadata_blocks[current_metadata_idx + 1]
-                    if sequence_count >= next_metadata.start_index:
-                        current_metadata = next_metadata
-                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                        current_metadata_idx += 1
-                
-                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-                bases_array = reverse_map[seq_array]
-                bases = bases_array.tobytes().decode('ascii')
-                
-                # Generate header from structure template
-                if current_metadata and current_metadata.structure_template:
-                    header = f"@{current_metadata.structure_template}"
-                elif sra_accession:
-                    header = f"@{sra_accession}"
-                else:
-                    header = "@seq"
-                
-                # Reconstruct quality
-                if current_inverse_table is not None:
-                    quality_scores = reverse_scaling_to_quality(
-                        seq_array, base_ranges, reverse_map,
-                        current_inverse_table, max_phred=phred_alphabet_max
-                    )
-                    quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-                else:
-                    quality_string = 'I' * len(bases)
-                
-                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
-                sequence_count += 1
+                i += 1
+
         
         # Mode 2: Headers compressed, bases as binary (original behavior)
         else:
@@ -656,21 +660,26 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, base_ranges,
                 
                 if current_inverse_table is not None:
                     quality_scores = reverse_scaling_to_quality(
-                        seq_array, base_ranges, reverse_map,
+                        seq_array, subtract_table,
                         current_inverse_table, max_phred=phred_alphabet_max
                     )
                     quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
                 else:
                     quality_string = 'I' * len(bases)
                 
-                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
-                
+                output_buffer.append(header.encode('ascii'))
+                output_buffer.append(b'\n')
+                output_buffer.append(bases.encode('ascii'))
+                output_buffer.append(b'\n+\n')
+                output_buffer.append(quality_string.encode('ascii'))
+                output_buffer.append(b'\n')
+                                
                 sequence_count += 1
                 pos = seq_end + 1
             
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
-        return (chunk_id, ''.join(output_buffer), sequence_count - start_seq_idx)
+        return (chunk_id, b''.join(output_buffer), sequence_count - start_seq_idx)
     
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")
@@ -691,7 +700,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"Reconstruction mode: {mode}")
     
     with open(input_path, 'rb') as f:
-        data = f.read()
+        data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     file_size = len(data)
     print(f"File size: {file_size:,} bytes ({file_size / (1024**2):.2f} MB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
@@ -712,6 +721,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
         print(f"SRA Accession: {sra_accession}")
     
     reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
+    subtract_table = create_base_map()
+    inverse_tables = []
     
     inverse_tables = []
     if mode in [1, 2, 3]:
@@ -789,11 +800,12 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print("Reconstructing FASTQ with parallel processing...")
     total_sequences = 0
     
-    with open(output_path, 'w', buffering=chunk_size_bytes) as outfile:
+    with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         with Pool(processes=num_workers) as pool:
             worker_func = partial(
                 process_chunk_worker_reconstruction,
                 reverse_map=reverse_map,
+                subtract_table=subtract_table,
                 base_ranges=base_ranges,
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
