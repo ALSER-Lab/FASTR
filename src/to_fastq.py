@@ -168,12 +168,12 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             structure_template = None
             if line_idx > 0 and lines[line_idx - 1].startswith('#STRUCTURE:'):
                 structure_template = lines[line_idx - 1].split(':', 1)[1].strip()
-            line_idx += 1
-            scaling_equation = 'x'
-            if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
-                scaling_equation = lines[line_idx].split(':', 1)[1].strip()
-                print(f"Found equation: {scaling_equation}")
                 line_idx += 1
+                scaling_equation = 'x'
+                if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
+                    scaling_equation = lines[line_idx].split(':', 1)[1].strip()
+                    print(f"Found equation: {scaling_equation}")
+                    line_idx += 1
             
             start_index = 0
             end_index = -1
