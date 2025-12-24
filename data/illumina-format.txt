@@ -33,3 +33,7 @@ lane	❌ No (within a lane)
 tile	✅ Yes
 x-pos	✅ Yes
 y-pos	✅ Yes
+read number (1/2)	⚠️ Between R1 and R2	Constant within R1 or R2 FASTQ
+is filtered	❌ No	Per cluster
+control number	❌ No	Usually 0
+index sequence	❌ No	Same for read pair
