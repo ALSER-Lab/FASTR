@@ -19,7 +19,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False,
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
-                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4):
+                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4, adaptive_sample_size=10):
     """
     Main processing function using streaming architecture to handle files of any size.
     Uses streaming with pool.imap to maintain consistent memory usage.
@@ -49,6 +49,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     flowcell_metadata_list = []
     current_flowcell_metadata = None
     structure_template = None
+    delimiter = None
     flowcell_start_index = 0
     total_sequences = 0
     
@@ -67,9 +68,41 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             outfile.write(b' ' * placeholder_size)  # Write spaces as placeholder
             outfile.write(b'\n')
         
+        # Create chunk generator
+        chunk_gen = chunk_generator(fastq_path, chunk_size_bytes)
+        first_chunk_data = next(chunk_gen) # Process FIRST chunk to get structure/delimiter
+        worker_func_first = partial( # Create worker function WITHOUT structure initially
+            process_chunk_worker,
+            base_map=base_map,
+            phred_map=phred_map,
+            compress_headers=compress_headers,
+            sequencer_type=sequencer_type,
+            paired_end=paired_end,
+            keep_bases=keep_bases,
+            keep_quality=keep_quality,
+            quality_scaling=quality_scaling,
+            custom_formula=custom_formula,
+            phred_alphabet_max=phred_alphabet_max,
+            min_quality=min_quality,
+            BYTE_LOOKUP=BYTE_LOOKUP,
+            binary=binary,
+            remove_repeating_header=remove_repeating_header,
+            adaptive_structure=None,
+            adaptive_delimiter=None,
+            adaptive_sample_size=adaptive_sample_size
+        )
+        chunk_id, processed_bytes, metadata, structure_template, delimiter, count = worker_func_first(first_chunk_data)
+        
+        outfile.write(processed_bytes)
+        total_sequences = count
+        
+        if metadata:
+            current_flowcell_metadata = metadata
+            flowcell_start_index = 0
+        
         # Create worker pool and process chunks as they come in
         with Pool(processes=num_workers) as pool:
-            # Create partial function with fixed args
+            # Create partial function w/ fixed args
             worker_func = partial(
                 process_chunk_worker,
                 base_map=base_map,
@@ -85,14 +118,17 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 min_quality=min_quality,
                 BYTE_LOOKUP=BYTE_LOOKUP,
                 binary=binary,
-                remove_repeating_header=remove_repeating_header
+                remove_repeating_header=remove_repeating_header,
+                adaptive_structure=structure_template,
+                adaptive_delimiter=delimiter, 
+                adaptive_sample_size=adaptive_sample_size
             )
             
             # Use imap to process chunks as they're read (streaming)
             # chunksize=1 ensures order is preserved
-            for chunk_id, processed_bytes, metadata, structure, count in pool.imap(
+            for chunk_id, processed_bytes, metadata, structure, delimiter_result, count in pool.imap(
                 worker_func, 
-                chunk_generator(fastq_path, chunk_size_bytes), 
+                chunk_gen, 
                 chunksize=1
             ):
                 # Write immediately as each chunk completes
@@ -101,6 +137,9 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 # Capture structure template from first chunk
                 if structure and structure_template is None:
                     structure_template = structure
+                # Capture delimiter from first chunk
+                if delimiter_result and delimiter is None:
+                    delimiter = delimiter_result
                 
                 # Track flowcell metadata
                 if metadata:
@@ -230,9 +269,9 @@ def main():
     # Sequencer Group
     seq_group = parser.add_argument_group("SEQUENCER & HEADERS")
     seq_group.add_argument("--seq_type", type=str, metavar="STR",
-                           choices=['none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
-                           default='none',
-                           help="Sequencer type for header compression. [none]\n"
+                           choices=['none', 'adaptive', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
+                           default='adaptive',
+                           help="Sequencer type for header compression. [adaptive]\n"
                            "Available options: {'none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', \n"
                            "                    'pacbio_clr', 'ont', 'srr', 'old_illumina'} ")
     seq_group.add_argument("--compress_hdr", type=int, default=0, metavar="INT",
@@ -243,6 +282,8 @@ def main():
                            help="Enable multiple flowcell detection and tracking (0/1) [0]")
     seq_group.add_argument("--rm_repeat_hdr", type=int, default=0, metavar="INT",
                            help="Remove repeating metadata from headers, store only at top (0/1) [0]")
+    seq_group.add_argument("--adaptive_sample", type=int, default=10, metavar="INT",
+                       help="Number of headers to analyze for adaptive pattern detection [10]")
 
     # Encoding/Grayscale Group
     gray_group = parser.add_argument_group("ENCODING & GRAYSCALE")
@@ -367,7 +408,8 @@ def main():
         paired_end=(args.paired == 1),
         paired_end_mode=args.paired_mode,
         num_workers=args.workers,
-        chunk_size_mb=args.chunk_mb
+        chunk_size_mb=args.chunk_mb,
+        adaptive_sample_size=args.adaptive_sample 
     )
 
     end_time = time.perf_counter()

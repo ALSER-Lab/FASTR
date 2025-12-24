@@ -7,10 +7,11 @@ from fastq_writer import process_and_write_records
 
 
 def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
-                         sequencer_type, paired_end, keep_bases, 
-                         keep_quality, quality_scaling, custom_formula,
-                         phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
-                         remove_repeating_header):
+                        sequencer_type, paired_end, keep_bases, 
+                        keep_quality, quality_scaling, custom_formula,
+                        phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
+                        remove_repeating_header, adaptive_structure, 
+                        adaptive_delimiter, adaptive_sample_size):
     """
     Worker function that processes a single chunk in parallel.
     Parses FASTQ records and applies transformations.
@@ -21,10 +22,13 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
         print(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")
         
         # Parse the records from buffer
-        records, _, metadata, structure, count = parse_fastq_records_from_buffer(
+        records, _, metadata, structure, delimiter, count = parse_fastq_records_from_buffer(
             buffer, start_index, base_map, phred_map,
             compress_headers, sequencer_type, paired_end,
-            keep_bases, keep_quality
+            keep_bases, keep_quality,
+            adaptive_structure=adaptive_structure,
+            adaptive_delimiter=adaptive_delimiter,
+            adaptive_sample_size=adaptive_sample_size
         )
         
         print(f"Worker parsed {count} records from chunk {chunk_id}")
@@ -40,7 +44,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
             )
         
         print(f"Worker completed chunk {chunk_id}")
-        return (chunk_id, output_buffer.getvalue(), metadata, structure, count)
+        return (chunk_id, output_buffer.getvalue(), metadata, structure, delimiter, count)
         
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")

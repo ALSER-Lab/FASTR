@@ -1,33 +1,51 @@
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 from data_structures import FASTQRecord
-from header_compression import compress_header
+from header_compression import adaptive_compress_header, analyze_headers_for_pattern, compress_header
 
 
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray,
                                     phred_map: Optional[np.ndarray], compress_headers: bool,
                                     sequencer_type: str, paired_end: bool, keep_bases: bool,
-                                    keep_quality: bool) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], Optional[str], int]:
+                                    keep_quality: bool, adaptive_structure: Optional[str] = None,
+                                    adaptive_delimiter: Optional[str] = None,
+                                    adaptive_sample_size: int = 100) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], Optional[str], Optional[str], int]:
     """
     Parse FASTQ records from a buffer using vectorized operations.
-    Returns (records, leftover_buffer, current_flowcell_metadata, structure_template, num_records)
+    Returns (records, leftover_buffer, current_flowcell_metadata, structure_template, delimiter, num_records)
     """
     
     records = []
     current_flowcell_metadata = None
-    structure_template = None
+    structure_template = adaptive_structure
+    delimiter = adaptive_delimiter
     lines = buffer.split(b'\n')
     
-    # Check if we have complete 4-line records
     if lines and lines[-1] == b'':
         lines = lines[:-1]
     
-    num_complete_records = len(lines) // 4
+    num_complete_records = len(lines) // 4 # Check that line count divisible by 4
     
     if num_complete_records == 0:
-        return records, buffer, current_flowcell_metadata, structure_template, 0
+        return records, buffer, current_flowcell_metadata, structure_template, delimiter, 0
     
     leftover = b'\n'.join(lines[num_complete_records * 4:])
+    
+    # If using adaptive mode and we don't have a structure yet, analyze headers first
+    if compress_headers and sequencer_type == 'adaptive' and structure_template is None:
+        # Extract sample of headers for analysis
+        sample_headers = []
+        max_samples = min(num_complete_records * 4, adaptive_sample_size * 4) # User-inputted sampling size
+        for i in range(0, max_samples, 4):  # Divide by 4 bc each "block" of fastq has 4 lines
+            header_str = lines[i].decode('utf-8', errors='ignore')
+            if header_str.startswith('@'):
+                header_str = header_str[1:]  # Remove @ prefix
+            sample_headers.append(header_str)
+        
+        structure_template, delimiter, current_flowcell_metadata = analyze_headers_for_pattern(
+            sample_headers, 
+            sample_size=adaptive_sample_size
+        )
     
     # Pre-create binary map ONCE if needed
     binary_map = None
@@ -92,12 +110,18 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             
             # Header compression
             if compress_headers and sequencer_type != 'none':
-                common, unique_id, structure = compress_header(header_str, sequencer_type)
-                if common:
-                    current_flowcell_metadata = common
-                
-                if structure and structure_template is None:
-                    structure_template = structure
+                if sequencer_type == 'adaptive':
+                    # Use adaptive compression with detected structure
+                    common, unique_id = adaptive_compress_header(header_str, structure_template, delimiter, 
+                                                                 current_flowcell_metadata)
+                else:
+                    # Use standard sequencer based compression
+                    common, unique_id, structure = compress_header(header_str, sequencer_type)
+                    if common:
+                        current_flowcell_metadata = common
+                    
+                    if structure and structure_template is None:
+                        structure_template = structure
                 
                 if paired_end and pair_number > 0:
                     header = f"@{unique_id}/{pair_number}\n".encode('utf-8')
@@ -119,4 +143,4 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             )
             records.append(record)
     
-    return records, leftover, current_flowcell_metadata, structure_template, num_complete_records
+    return records, leftover, current_flowcell_metadata, structure_template, delimiter, num_complete_records
