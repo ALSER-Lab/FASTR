@@ -19,7 +19,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False,
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
-                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4, adaptive_sample_size=10):
+                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4, adaptive_sample_size=10,
+                          mode=None):
     """
     Main processing function using streaming architecture to handle files of any size.
     Uses streaming with pool.imap to maintain consistent memory usage.
@@ -189,22 +190,32 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             outfile.seek(metadata_position)
             
             metadata_lines = []
+            metadata_lines.append(f"#MODE={mode}\n")
+            
+            seq_type_display = sequencer_type
+            if sra_accession:
+                if '_sra' not in sequencer_type:
+                    seq_type_display = f"{sequencer_type}_sra"
+            
+            metadata_lines.append(f"#SEQ-TYPE={seq_type_display}\n")
             
             if multiple_flowcells and len(flowcell_metadata_list) > 0:
                 # Build metadata lines for multiple flowcells
-                for metadata, start_idx, end_idx, struct in flowcell_metadata_list:
-                    metadata_lines.append(f"#STRUCTURE:{struct}\n")
-                    metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
-                    equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                    metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
-                    metadata_lines.append(f"#RANGE:{start_idx}-{end_idx}\n")
+                for fc_idx, (metadata, start_idx, end_idx, struct) in enumerate(flowcell_metadata_list):
+                    if fc_idx > 0:
+                        metadata_lines.append("\n")
+                        metadata_lines.append(f"#MODE={mode}\n")
+                        metadata_lines.append(f"#SEQ-TYPE={seq_type_display}\n")
+                    
+                    write_sequencer_metadata(metadata_lines, metadata, sequencer_type, struct, 
+                                            paired_end, paired_end_mode, quality_scaling, 
+                                            custom_formula, phred_alphabet_max, start_idx, end_idx)
             else:
                 # Single flowcell
-                if structure_template:
-                    metadata_lines.append(f"#STRUCTURE:{structure_template}\n")
-                metadata_lines.append(f"#SEQUENCER:{sequencer_type}\n")
-                equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-                metadata_lines.append(f"#QUAL_SCALE:{equation}\n")
+                metadata = current_flowcell_metadata if current_flowcell_metadata else {}
+                write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure_template,
+                                        paired_end, paired_end_mode, quality_scaling,
+                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1)
             
             # Write metadata and pad remaining space
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')
@@ -218,6 +229,122 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     
     print(f"Total sequences written: {total_sequences:,}")
 
+def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure,
+                             paired_end, paired_end_mode, quality_scaling,
+                             custom_formula, phred_alphabet_max, start_idx, end_idx,
+                             sra_accession=None):
+    """
+    Write metadata headers for different sequencer types.
+    Fixed to properly handle SRA hybrid formats.
+    """
+    instrument = ''
+    sample_id = ''
+    run_number = ''
+    run_date = ''
+    run_start_time = ''
+    flow_cell = ''
+    header_common = ''
+    accession = ''
+    length = ''  # Should be 'y' if length=x exists in header, blank otherwise
+    
+    if 'sra' in metadata:
+        accession = metadata['sra']
+    elif sra_accession:
+        accession = sra_accession
+    
+    # This cleans the accession (so we dont mess up and write out something like SRR.X in the metadata, but rather SRR)
+    if accession:
+        for delimiter in ['.', ' ', '_', '/', ':']:
+            if delimiter in accession:
+                accession = accession.split(delimiter)[0]
+                break
+    
+    if sequencer_type in ['pacbio_hifi_sra', 'pacbio_clr_sra']:
+        movie = metadata.get('movie', '')
+        if movie and '_' in movie:
+            parts = movie.split('_')
+            instrument = parts[0]  # e.g., 'm64011'
+            if len(parts) >= 2 and len(parts[1]) == 6:
+                run_date = parts[1]  # e.g., '190830'
+            if len(parts) >= 3 and len(parts[2]) == 6:
+                run_start_time = parts[2]  # e.g., '220126'
+        else:
+            instrument = movie
+        
+        read_type = metadata.get('read_type', '')
+        if read_type == 'hifi' or 'hifi' in sequencer_type:
+            header_common = '/ccs'
+    
+    elif sequencer_type == 'illumina_sra':
+        instrument = metadata.get('instrument', '')
+        flow_cell = metadata.get('flowcell', '')
+        run_number = metadata.get('run_id', '')
+        if structure:
+            parts = structure.split()
+            if len(parts) > 1:
+                header_parts = parts[1].split(':')
+                if len(header_parts) >= 4:
+                    header_common = ':'.join(header_parts[:4])
+    
+    elif sequencer_type == 'ont_sra':
+        sample_id = metadata.get('sampleid', '')
+        run_number = metadata.get('runid', '')
+    
+    elif sequencer_type in ['illumina', 'old_illumina']:
+        instrument = metadata.get('instrument', '')
+        flow_cell = metadata.get('flowcell', '')
+        run_number = metadata.get('run_id', '')
+        if structure:
+            parts = structure.split('{REPEATING_')
+            header_common = parts[0].rstrip(':') if parts else ''
+    
+    elif sequencer_type.startswith('pacbio'):
+        movie = metadata.get('movie', '')
+        if movie and '_' in movie:
+            parts = movie.split('_')
+            instrument = parts[0]
+            if len(parts) >= 2 and len(parts[1]) == 6:
+                run_date = parts[1]
+            if len(parts) >= 3 and len(parts[2]) == 6:
+                run_start_time = parts[2]
+        else:
+            instrument = movie
+        
+        read_type = metadata.get('read_type', '')
+        if read_type == 'hifi' or read_type == 'ccs':
+            header_common = '/ccs'
+    
+    elif sequencer_type == 'ont':
+        sample_id = metadata.get('sampleid', '')
+        run_number = metadata.get('runid', '')
+    
+    elif sequencer_type == 'srr':
+        prefix = metadata.get('prefix', '')
+        accession_num = metadata.get('accession', '')
+        if prefix and accession_num:
+            accession = f"{prefix}{accession_num}"
+    
+    # Check if length=x exists in structure (ONT format typically has this)
+    # OR if has_length flag is set in metadata (PacBio SRA formats)
+    if (structure and 'length=' in structure.lower()) or metadata.get('has_length', False):
+        length = 'y'
+    metadata_lines.append(f"#ACCESSION={accession}\n")
+    metadata_lines.append(f"#INSTRUMENT={instrument}\n")
+    metadata_lines.append(f"#SAMPLE-ID={sample_id}\n")
+    metadata_lines.append(f"#RUN-NUMBER={run_number}\n")
+    metadata_lines.append(f"#RUN-DATE(YYYYMMDD)={run_date}\n")
+    metadata_lines.append(f"#RUN-START-TIME={run_start_time}\n")
+    metadata_lines.append(f"#FLOW-CELL={flow_cell}\n")
+    metadata_lines.append(f"#HEADER-COMMON={header_common}\n")
+    metadata_lines.append(f"#LENGTH={length}\n")
+    metadata_lines.append(f"#PAIRED-END={'1' if paired_end else ''}\n")
+    metadata_lines.append(f"#PAIRED-END-SAME-FILE={'1' if (paired_end and paired_end_mode == 'same_file') else ''}\n")
+    
+    equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
+    metadata_lines.append(f"#QUAL_SCALE={equation}\n")
+    
+    if structure:
+        metadata_lines.append(f"#STRUCTURE:{structure}\n")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -269,11 +396,16 @@ def main():
     # Sequencer Group
     seq_group = parser.add_argument_group("SEQUENCER & HEADERS")
     seq_group.add_argument("--seq_type", type=str, metavar="STR",
-                           choices=['none', 'adaptive', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina'],
-                           default='adaptive',
-                           help="Sequencer type for header compression. [adaptive]\n"
-                           "Available options: {'none', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 'pacbio_subread', \n"
-                           "                    'pacbio_clr', 'ont', 'srr', 'old_illumina'} ")
+                           choices=['none', 'adaptive', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 
+                                    'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina',
+                                    'pacbio_hifi_sra', 'pacbio_clr_sra', 'ont_sra', 'illumina_sra'],
+        default='adaptive',
+        help=(
+            "Sequencer type for header compression. [adaptive]\n"
+            "Standard: {'illumina', 'pacbio_hifi', 'pacbio_clr', 'ont', 'srr', 'old_illumina'}\n"
+            "SRA Hybrid: {'illumina_sra', 'pacbio_hifi_sra', 'pacbio_clr_sra', 'ont_sra'}"
+        )
+    )
     seq_group.add_argument("--compress_hdr", type=int, default=0, metavar="INT",
                            help="Compress FASTQ headers on-the-fly (0/1) [0]")
     seq_group.add_argument("--sra_acc", type=str, default=None, metavar="STR",
@@ -405,11 +537,12 @@ def main():
         multiple_flowcells=(args.multi_flow == 1),
         remove_repeating_header=(args.rm_repeat_hdr == 1),
         phred_alphabet_max=phred_alphabet_max,
-        paired_end=(args.paired == 1),
+        paired_end=args.paired,
         paired_end_mode=args.paired_mode,
         num_workers=args.workers,
         chunk_size_mb=args.chunk_mb,
-        adaptive_sample_size=args.adaptive_sample 
+        adaptive_sample_size=args.adaptive_sample, 
+        mode=args.mode
     )
 
     end_time = time.perf_counter()
