@@ -8,10 +8,13 @@ ILLUMINA_PATTERN = re.compile(r'@([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+):(\d+)
 PACBIO_HIFI_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs(?:/(\w+))?')
 PACBIO_SUBREAD_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)')
 PACBIO_CLR_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+RQ=[\d.]+)?')
-# Handles: @HWUSI-EAS100R:6:73:941:1973#0/1
 OLD_ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):(\d+):(\d+):(\d+)#([A-Za-z0-9]+)/(\d+)')
-SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)') 
+SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)(?:\s+(.*))?')
 
+# SRA HYBRIDS
+SRA_PACBIO_HIFI_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^/]+)/(\d+)/ccs(?:\s+(.*))?')
+SRA_PACBIO_CLR_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+(.*))?')
+SRA_ILLUMINA_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+):(\d+)(?:\s+(.*))?')
 
 def get_delimiter_for_sequencer(sequencer_type: str) -> str:
     """Get the delimiter character used by each sequencer type"""
@@ -95,50 +98,69 @@ def parse_pacbio_clr_header(header: str) -> Tuple[Dict, str, str]:
 
 
 def parse_ont_header(header: str) -> Tuple[Dict, str, str]:
-    """Parse Oxford Nanopore headers"""
     parts = header.strip().split()
     if not parts:
         return {}, header, ""
     
     read_id = parts[0][1:] if parts[0].startswith('@') else parts[0]
     
-    # Parse key-value pairs
     kvs = {}
     for part in parts[1:]:
         if '=' in part:
             key, value = part.split('=', 1)
             kvs[key] = value
     
-    # Common metadata
     common_keys = ['runid', 'sampleid', 'model_version_id', 'basecall_model_version_id']
     common = {k: kvs[k] for k in common_keys if k in kvs}
     
-    # Build structure template
-    unique_keys = ['read', 'ch', 'start_time']
-    structure_parts = [read_id]
-    unique_parts = []
+    field_keys = []
+    field_values = []
+    for key, value in kvs.items():
+        if key not in common_keys:
+            field_keys.append(key)
+            field_values.append(value)
     
-    for key in unique_keys:
-        if key in kvs:
-            structure_parts.append(f"{key}={{REPEATING_{len(unique_parts)+1}}}")
-            unique_parts.append(kvs[key])
-    
-    structure = ':'.join(structure_parts) if len(structure_parts) > 1 else read_id
-    unique_id = ':'.join(unique_parts) if unique_parts else read_id
+    if field_keys:
+        structure_fields = ' '.join([f"{key}={{REPEATING_{i+2}}}" for i, key in enumerate(field_keys)])
+        structure = f"{read_id} {{REPEATING_1}} {structure_fields}"
+        unique_id = f"{parts[1] if len(parts) > 1 and '=' not in parts[1] else ''}:" + ':'.join(field_values)
+        unique_id = unique_id.lstrip(':')
+    else:
+        structure = f"{read_id} {{REPEATING_1}}"
+        unique_id = parts[1] if len(parts) > 1 and '=' not in parts[1] else read_id
     
     return common, unique_id, structure
 
 
 def parse_srr_header(header: str) -> Tuple[Dict, str, str]:
-    """Parse SRA/SRR format headers"""
     match = SRR_PATTERN.match(header)
     if not match:
         return {}, header, ""
     
-    prefix, accession, read_index, spot = match.groups()
-    common = {'prefix': prefix, 'accession': accession}
-    structure = f"{prefix}{accession}.{{REPEATING_1}} {{REPEATING_2}}"
-    unique_id = f"{read_index}:{spot}"
+    prefix = match.group(1)
+    accession_num = match.group(2)
+    read_index = match.group(3)
+    spot = match.group(4)
+    extra_fields = match.group(5) if len(match.groups()) >= 5 and match.group(5) else ''
+    
+    common = {'prefix': prefix, 'accession': accession_num}
+    
+    has_length = 'length=' in extra_fields.lower() if extra_fields else False
+    
+    if extra_fields and has_length:
+        fields = extra_fields.split()
+        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
+        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
+    
+    if extra_fields:
+        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}} {{REPEATING_3}}"
+        unique_id = f"{read_index}:{spot}:{extra_fields}"
+    else:
+        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}}"
+        unique_id = f"{read_index}:{spot}"
+    
+    if has_length:
+        common['has_length'] = True
     
     return common, unique_id, structure
 
@@ -315,24 +337,26 @@ def adaptive_compress_header(header: str, structure: str, delimiter: str,
 def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str, str]:
     """
     Compress a single header based on sequencer type.
-    Returns (common_metadata_dict, unique_id, structure_template)
     """
-    if sequencer_type == 'illumina':
-        return parse_illumina_header(header)
-    elif sequencer_type == 'old_illumina':
-        return parse_old_illumina_header(header)
-    elif sequencer_type == 'pacbio_hifi':
-        return parse_pacbio_hifi_header(header)
-    elif sequencer_type == 'pacbio_clr':
-        return parse_pacbio_clr_header(header)
-    elif sequencer_type == 'pacbio_subread':
-        return parse_pacbio_subread_header(header)
-    elif sequencer_type == 'ont':
-        return parse_ont_header(header)
-    elif sequencer_type == 'srr':
-        return parse_srr_header(header)
-    else:
-        return {}, header, ""
+    # Lookup dict in order to avoid long elif chain
+    HEADER_PARSERS = {
+        'illumina': parse_illumina_header,
+        'old_illumina': parse_old_illumina_header,
+        'pacbio_hifi': parse_pacbio_hifi_header,
+        'pacbio_clr': parse_pacbio_clr_header,
+        'pacbio_subread': parse_pacbio_subread_header,
+        'ont': parse_ont_header,
+        'srr': parse_srr_header,
+        'pacbio_hifi_sra': parse_pacbio_hifi_sra_header,
+        'pacbio_clr_sra': parse_pacbio_clr_sra_header,
+        'ont_sra': parse_ont_sra_header,
+        'illumina_sra': parse_illumina_sra_header
+    }
+    parser_func = HEADER_PARSERS.get(sequencer_type)
+    if parser_func:
+        return parser_func(header)
+    
+    return {}, header, ""
 
 
 def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_type: str, pair_number: int = 0) -> str:
@@ -366,3 +390,195 @@ def metadata_dict_equals(dict1: Dict, dict2: Dict) -> bool:
         if dict1[key] != dict2[key]:
             return False
     return True
+
+def parse_pacbio_hifi_sra_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRA_PACBIO_HIFI_PATTERN.match(header)
+    if not match: 
+        return {}, header, ""
+    
+    accession = match.group(1)
+    spot = match.group(2)
+    movie = match.group(3)
+    hole = match.group(4)
+    extra_fields = match.group(5) if match.group(5) else ''
+    
+    common = {'sra': accession, 'movie': movie}
+    
+    has_length = 'length=' in extra_fields.lower() if extra_fields else False
+    
+    if extra_fields and has_length:
+        fields = extra_fields.split()
+        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
+        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
+    
+    if extra_fields:
+        structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs {{REPEATING_3}}"
+        unique_id = f"{spot}:{hole}:{extra_fields}"
+    else:
+        structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs"
+        unique_id = f"{spot}:{hole}"
+    
+    if has_length:
+        common['has_length'] = True
+    
+    return common, unique_id, structure
+
+
+def parse_pacbio_clr_sra_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRA_PACBIO_CLR_PATTERN.match(header)
+    if not match: 
+        return {}, header, ""
+    
+    accession = match.group(1)
+    spot = match.group(2)
+    movie = match.group(3)
+    hole = match.group(4)
+    start_pos = match.group(5)
+    end_pos = match.group(6)
+    extra_fields = match.group(7) if len(match.groups()) >= 7 and match.group(7) else ''
+    
+    common = {'sra': accession, 'movie': movie}
+    
+    has_length = 'length=' in extra_fields.lower() if extra_fields else False
+    
+    if extra_fields and has_length:
+        fields = extra_fields.split()
+        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
+        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
+    
+    if extra_fields:
+        structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}} {{REPEATING_5}}"
+        unique_id = f"{spot}:{hole}:{start_pos}_{end_pos}:{extra_fields}"
+    else:
+        structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}}"
+        unique_id = f"{spot}:{hole}:{start_pos}_{end_pos}"
+    
+    if has_length:
+        common['has_length'] = True
+    
+    return common, unique_id, structure
+
+def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
+    parts = header.strip().split()
+    if len(parts) < 2: 
+        return {}, header, ""
+    
+    sra_acc = parts[0][1:]
+    accession = sra_acc.split('.')[0] if '.' in sra_acc else sra_acc
+    spot = sra_acc.split('.')[-1] if '.' in sra_acc else ''
+    read_uuid = parts[1]
+    
+    kvs = {p.split('=')[0]: p.split('=')[1] for p in parts[2:] if '=' in p}
+    
+    common = {
+        'sra': accession,
+        'runid': kvs.get('runid', ''),
+        'sampleid': kvs.get('sampleid', '')
+    }
+    
+    has_length = 'length' in kvs
+    
+    field_keys = []
+    field_values = []
+    for key, value in kvs.items():
+        if key not in ['length', 'runid', 'sampleid']:
+            field_keys.append(key)
+            field_values.append(value)
+    
+    if spot:
+        if field_keys:
+            structure_fields = ' '.join([f"{key}={{REPEATING_{i+3}}}" for i, key in enumerate(field_keys)])
+            structure = f"{accession}.{{REPEATING_1}} {{REPEATING_2}} {structure_fields}"
+            unique_id = f"{spot}:{read_uuid}:" + ':'.join(field_values)
+        else:
+            structure = f"{accession}.{{REPEATING_1}} {{REPEATING_2}}"
+            unique_id = f"{spot}:{read_uuid}"
+    else:
+        if field_keys:
+            structure_fields = ' '.join([f"{key}={{REPEATING_{i+2}}}" for i, key in enumerate(field_keys)])
+            structure = f"{accession} {{REPEATING_1}} {structure_fields}"
+            unique_id = f"{read_uuid}:" + ':'.join(field_values)
+        else:
+            structure = f"{accession} {{REPEATING_1}}"
+            unique_id = f"{read_uuid}"
+    
+    if has_length:
+        common['has_length'] = True
+    
+    return common, unique_id, structure
+
+
+def parse_srr_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRR_PATTERN.match(header)
+    if not match:
+        return {}, header, ""
+    
+    prefix = match.group(1)
+    accession_num = match.group(2)
+    read_index = match.group(3)
+    spot = match.group(4)
+    extra_fields = match.group(5) if len(match.groups()) >= 5 and match.group(5) else ''
+    
+    common = {'prefix': prefix, 'accession': accession_num}
+    
+    has_length = 'length=' in extra_fields.lower() if extra_fields else False
+    
+    if extra_fields and has_length:
+        fields = extra_fields.split()
+        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
+        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
+    
+    if extra_fields:
+        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}} {{REPEATING_3}}"
+        unique_id = f"{read_index}:{spot}:{extra_fields}"
+    else:
+        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}}"
+        unique_id = f"{read_index}:{spot}"
+    
+    if has_length:
+        common['has_length'] = True
+    
+    return common, unique_id, structure
+
+def parse_illumina_sra_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRA_ILLUMINA_PATTERN.match(header)
+    if not match: 
+        return {}, header, ""
+    
+    accession = match.group(1)
+    spot = match.group(2)
+    instrument = match.group(3)
+    run_id = match.group(4)
+    flowcell = match.group(5)
+    lane = match.group(6)
+    tile = match.group(7)
+    x_pos = match.group(8)
+    y_pos = match.group(9)
+    extra_fields = match.group(10) if len(match.groups()) >= 10 and match.group(10) else ''
+    
+    common = {
+        'sra': accession,
+        'instrument': instrument,
+        'run_id': run_id,
+        'flowcell': flowcell,
+        'lane': lane
+    }
+    
+    has_length = 'length=' in extra_fields.lower() if extra_fields else False
+    
+    if extra_fields and has_length:
+        fields = extra_fields.split()
+        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
+        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
+    
+    if extra_fields:
+        structure = f"{accession}.{{REPEATING_1}} {instrument}:{run_id}:{flowcell}:{lane}:{{REPEATING_2}}:{{REPEATING_3}}:{{REPEATING_4}} {{REPEATING_5}}"
+        unique_id = f"{spot}:{tile}:{x_pos}:{y_pos}:{extra_fields}"
+    else:
+        structure = f"{accession}.{{REPEATING_1}} {instrument}:{run_id}:{flowcell}:{lane}:{{REPEATING_2}}:{{REPEATING_3}}:{{REPEATING_4}}"
+        unique_id = f"{spot}:{tile}:{x_pos}:{y_pos}"
+    
+    if has_length:
+        common['has_length'] = True
+    
+    return common, unique_id, structure
