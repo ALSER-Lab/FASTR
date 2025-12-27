@@ -23,7 +23,6 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           mode=None):
     """
     Main processing function using streaming architecture to handle files of any size.
-    Uses streaming with pool.imap to maintain consistent memory usage.
     """
     
     file_size = os.path.getsize(fastq_path)
@@ -185,7 +184,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
         # Go back and write metadata headers at the beginning
-        if sequencer_type != 'none':
+        if sequencer_type != 'none' or mode is not None:
             end_position = outfile.tell()
             outfile.seek(metadata_position)
             
@@ -209,13 +208,13 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     
                     write_sequencer_metadata(metadata_lines, metadata, sequencer_type, struct, 
                                             paired_end, paired_end_mode, quality_scaling, 
-                                            custom_formula, phred_alphabet_max, start_idx, end_idx)
+                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map)
             else:
                 # Single flowcell
                 metadata = current_flowcell_metadata if current_flowcell_metadata else {}
                 write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure_template,
                                         paired_end, paired_end_mode, quality_scaling,
-                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1)
+                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map)
             
             # Write metadata and pad remaining space
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')
@@ -232,10 +231,9 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
 def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure,
                              paired_end, paired_end_mode, quality_scaling,
                              custom_formula, phred_alphabet_max, start_idx, end_idx,
-                             sra_accession=None):
+                             grayscale_map):
     """
     Write metadata headers for different sequencer types.
-    Fixed to properly handle SRA hybrid formats.
     """
     instrument = ''
     sample_id = ''
@@ -243,15 +241,11 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     run_date = ''
     run_start_time = ''
     flow_cell = ''
-    header_common = ''
     accession = ''
     length = ''  # Should be 'y' if length=x exists in header, blank otherwise
     
     if 'sra' in metadata:
         accession = metadata['sra']
-    elif sra_accession:
-        accession = sra_accession
-    
     # This cleans the accession (so we dont mess up and write out something like SRR.X in the metadata, but rather SRR)
     if accession:
         for delimiter in ['.', ' ', '_', '/', ':']:
@@ -271,9 +265,6 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
         else:
             instrument = movie
         
-        read_type = metadata.get('read_type', '')
-        if read_type == 'hifi' or 'hifi' in sequencer_type:
-            header_common = '/ccs'
     
     elif sequencer_type == 'illumina_sra':
         instrument = metadata.get('instrument', '')
@@ -283,8 +274,6 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
             parts = structure.split()
             if len(parts) > 1:
                 header_parts = parts[1].split(':')
-                if len(header_parts) >= 4:
-                    header_common = ':'.join(header_parts[:4])
     
     elif sequencer_type == 'ont_sra':
         sample_id = metadata.get('sampleid', '')
@@ -294,9 +283,6 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
         instrument = metadata.get('instrument', '')
         flow_cell = metadata.get('flowcell', '')
         run_number = metadata.get('run_id', '')
-        if structure:
-            parts = structure.split('{REPEATING_')
-            header_common = parts[0].rstrip(':') if parts else ''
     
     elif sequencer_type.startswith('pacbio'):
         movie = metadata.get('movie', '')
@@ -310,9 +296,6 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
         else:
             instrument = movie
         
-        read_type = metadata.get('read_type', '')
-        if read_type == 'hifi' or read_type == 'ccs':
-            header_common = '/ccs'
     
     elif sequencer_type == 'ont':
         sample_id = metadata.get('sampleid', '')
@@ -335,7 +318,8 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     metadata_lines.append(f"#RUN-DATE(YYYYMMDD)={run_date}\n")
     metadata_lines.append(f"#RUN-START-TIME={run_start_time}\n")
     metadata_lines.append(f"#FLOW-CELL={flow_cell}\n")
-    metadata_lines.append(f"#HEADER-COMMON={header_common}\n")
+    metadata_lines.append(f"#PHRED-ALPHABET=PHRED_{phred_alphabet_max + 1}\n") # We add one because the raw "Max" is one less than the values it can represent in total, due to the inclusion of 0
+    metadata_lines.append(f"#GRAY_VALS={grayscale_map[[ord('N')]]},{grayscale_map[[ord('A')]]},{grayscale_map[[ord('G')]]},{grayscale_map[[ord('C')]]},{grayscale_map[[ord('T')]]}\n")
     metadata_lines.append(f"#LENGTH={length}\n")
     metadata_lines.append(f"#PAIRED-END={'1' if paired_end else ''}\n")
     metadata_lines.append(f"#PAIRED-END-SAME-FILE={'1' if (paired_end and paired_end_mode == 'same_file') else ''}\n")
@@ -343,8 +327,10 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
     metadata_lines.append(f"#QUAL_SCALE={equation}\n")
     
-    if structure:
-        metadata_lines.append(f"#STRUCTURE:{structure}\n")
+    if structure: # Bug appeared that STRUCTURE wasn't writing even w/ mode 1 (that didnt use any compression), so we force output it here
+        metadata_lines.append(f"#STRUCTURE={structure}\n")
+    else:
+        metadata_lines.append(f"#STRUCTURE=\n")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -419,16 +405,16 @@ def main():
 
     # Encoding/Grayscale Group
     gray_group = parser.add_argument_group("ENCODING & GRAYSCALE")
-    gray_group.add_argument("--gray_N", type=int, default=1, metavar="INT",
-                            help="Grayscale value for N [1]")
-    gray_group.add_argument("--gray_A", type=int, default=63, metavar="INT",
-                            help="Grayscale value for A [63]")
-    gray_group.add_argument("--gray_C", type=int, default=191, metavar="INT",
-                            help="Grayscale value for C [191]")
-    gray_group.add_argument("--gray_G", type=int, default=255, metavar="INT",
-                            help="Grayscale value for G [255]")
-    gray_group.add_argument("--gray_T", type=int, default=127, metavar="INT",
-                            help="Grayscale value for T [127]")
+    gray_group.add_argument("--gray_N", type=int, default=0, metavar="INT",
+                            help="Grayscale value for N [0]")
+    gray_group.add_argument("--gray_A", type=int, default=3, metavar="INT",
+                            help="Grayscale value for A [3]")
+    gray_group.add_argument("--gray_G", type=int, default=66, metavar="INT",
+                            help="Grayscale value for G [66]")
+    gray_group.add_argument("--gray_C", type=int, default=129, metavar="INT",
+                            help="Grayscale value for C [129]")
+    gray_group.add_argument("--gray_T", type=int, default=192, metavar="INT",
+                            help="Grayscale value for T [192]")
 
     # Output format
     output_group = parser.add_argument_group("OUTPUT FORMAT")
@@ -507,9 +493,9 @@ def main():
     numpy_base_map = np.zeros(128, dtype=np.uint8)
     numpy_base_map[ord("N")] = args.gray_N
     numpy_base_map[ord("A")] = args.gray_A
-    numpy_base_map[ord("T")] = args.gray_T
-    numpy_base_map[ord("C")] = args.gray_C
     numpy_base_map[ord("G")] = args.gray_G
+    numpy_base_map[ord("C")] = args.gray_C
+    numpy_base_map[ord("T")] = args.gray_T
 
     start_time = time.perf_counter()
 
