@@ -152,13 +152,22 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
     
     # Lookup table approach for fast base scaling
     base_min_lookup = np.zeros(256, dtype=np.uint8)
-    base_min_lookup[63] = 1      # A
-    base_min_lookup[127] = 65    # T
-    base_min_lookup[191] = 129   # C
-    base_min_lookup[255] = 193   # G
-    base_min_lookup[1] = 0       # N
+
+    # N gets special handling w/ only 3 values (0-2)
+    # For N we'll scale the quality to 0-2 range instead of 0-62
+    n_mask = base_values == base_map[ord('N')]
+    base_min_lookup[base_map[ord('N')]] = 0     # N: 0-2
+    base_min_lookup[base_map[ord('A')]] = 3     # A: 3-65
+    base_min_lookup[base_map[ord('G')]] = 66    # G: 66-128
+    base_min_lookup[base_map[ord('C')]] = 129   # C: 129-191
+    base_min_lookup[base_map[ord('T')]] = 192   # T: 192-254
     
     result = base_min_lookup[base_values] + scale_factors
+    
+    # We apply a mask to n that scales it down (ONLY TO N)
+    if np.any(n_mask):
+        n_scale = (scale_factors[n_mask] * 2 // 62).astype(np.uint8)  # Map 0-62 to 0-2
+        result[n_mask] = base_min_lookup[base_map[ord('N')]] + n_scale
     
     return result.astype(np.uint8)
 
