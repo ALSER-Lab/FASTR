@@ -108,6 +108,10 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                 elif '/2' in header_str or '_2' in header_str:
                     pair_number = 2
             
+            
+            original_header = batch_lines[idx * 4] + b'\n' # Store original header BEFORE compression
+            # Basically in mode 3 we were initially storing the compressed headers instead of the "raw" ones
+            
             # Header compression
             if compress_headers and sequencer_type != 'none':
                 if sequencer_type == 'adaptive':
@@ -128,7 +132,7 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                 else:
                     header = f"@{unique_id}\n".encode('utf-8')
             else:
-                header = batch_lines[idx * 4] + b'\n'
+                header = original_header
             
             # Get quality
             qual_vals = qual_arrays[idx] if qual_arrays else np.array([], dtype=np.uint8)
@@ -139,7 +143,8 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                 sequence=seq_arrays[idx],
                 quality=qual_vals,
                 pair_number=pair_number,
-                quality_string=qual_data_list[idx] if keep_quality else b''
+                quality_string=qual_data_list[idx] if keep_quality else b'',
+                original_header=original_header
             )
             records.append(record)
     

@@ -20,7 +20,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
                           paired_end_mode='same_file', chunk_size_mb=32, num_workers=4, adaptive_sample_size=10,
-                          mode=None):
+                          mode=None, mode3_input_headers=None):
     """
     Main processing function using streaming architecture to handle files of any size.
     """
@@ -28,6 +28,15 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     file_size = os.path.getsize(fastq_path)
     print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
     print(f"Using {num_workers} worker processes for parallel processing")
+
+    # Are we extracting/reading headers for mode 3?
+    extract_headers = (mode == 3 and mode3_input_headers is None)
+    read_headers = (mode == 3 and mode3_input_headers is not None)
+    if extract_headers:
+        headers_output_path = output_path.rsplit('.', 1)[0] + '_headers.txt'
+        print(f"Mode 3: Extracting headers to {headers_output_path}")
+    elif read_headers:
+        print(f"Mode 3: Reading headers from {mode3_input_headers}")
     
     if compress_headers and sequencer_type != 'none':
         print(f"Header compression enabled (sequencer type: {sequencer_type})")
@@ -55,6 +64,13 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     
     print("Reading and processing chunks in parallel...")
     
+    headers_file = None
+    if extract_headers:
+        headers_file = open(headers_output_path, 'wb', buffering=chunk_size_bytes)
+    elif read_headers:
+        headers_file = open(mode3_input_headers, 'rb')
+        headers_file.close()
+    
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         # Write SRA accession if provided
         if sra_accession:
@@ -70,8 +86,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         
         # Create chunk generator
         chunk_gen = chunk_generator(fastq_path, chunk_size_bytes)
-        first_chunk_data = next(chunk_gen) # Process FIRST chunk to get structure/delimiter
-        worker_func_first = partial( # Create worker function WITHOUT structure initially
+        first_chunk_data = next(chunk_gen)  # Process FIRST chunk to get structure/delimiter
+        worker_func_first = partial(  # Create worker function WITHOUT structure initially
             process_chunk_worker,
             base_map=base_map,
             phred_map=phred_map,
@@ -89,11 +105,15 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             remove_repeating_header=remove_repeating_header,
             adaptive_structure=None,
             adaptive_delimiter=None,
-            adaptive_sample_size=adaptive_sample_size
+            adaptive_sample_size=adaptive_sample_size,
+            extract_headers=extract_headers
         )
-        chunk_id, processed_bytes, metadata, structure_template, delimiter, count = worker_func_first(first_chunk_data)
+        chunk_id, processed_bytes, metadata, structure_template, delimiter, count, headers_data, = worker_func_first(first_chunk_data)
         
         outfile.write(processed_bytes)
+        if extract_headers and headers_data:
+            headers_file.write(headers_data)
+        
         total_sequences = count
         
         if metadata:
@@ -121,18 +141,21 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 remove_repeating_header=remove_repeating_header,
                 adaptive_structure=structure_template,
                 adaptive_delimiter=delimiter, 
-                adaptive_sample_size=adaptive_sample_size
+                adaptive_sample_size=adaptive_sample_size,
+                extract_headers=extract_headers  # New parameter
             )
             
             # Use imap to process chunks as they're read (streaming)
             # chunksize=1 ensures order is preserved
-            for chunk_id, processed_bytes, metadata, structure, delimiter_result, count in pool.imap(
+            for chunk_id, processed_bytes, metadata, structure, delimiter_result, count, headers_data in pool.imap(
                 worker_func, 
                 chunk_gen, 
                 chunksize=1
             ):
                 # Write immediately as each chunk completes
                 outfile.write(processed_bytes)
+                if extract_headers and headers_data:
+                    headers_file.write(headers_data)
                 
                 # Capture structure template from first chunk
                 if structure and structure_template is None:
@@ -208,13 +231,13 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     
                     write_sequencer_metadata(metadata_lines, metadata, sequencer_type, struct, 
                                             paired_end, paired_end_mode, quality_scaling, 
-                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map)
+                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map, mode)
             else:
                 # Single flowcell
                 metadata = current_flowcell_metadata if current_flowcell_metadata else {}
                 write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure_template,
                                         paired_end, paired_end_mode, quality_scaling,
-                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map)
+                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map, mode)
             
             # Write metadata and pad remaining space
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')
@@ -226,12 +249,16 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             
             outfile.seek(end_position)  # Return to end
     
+    if extract_headers and headers_file:
+        headers_file.close()
+        print(f"Headers saved to: {headers_output_path}")
+    
     print(f"Total sequences written: {total_sequences:,}")
 
 def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure,
                              paired_end, paired_end_mode, quality_scaling,
                              custom_formula, phred_alphabet_max, start_idx, end_idx,
-                             grayscale_map):
+                             grayscale_map, mode):
     """
     Write metadata headers for different sequencer types.
     """
@@ -327,7 +354,10 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
     metadata_lines.append(f"#QUAL_SCALE={equation}\n")
     
-    if structure: # Bug appeared that STRUCTURE wasn't writing even w/ mode 1 (that didnt use any compression), so we force output it here
+    # Don't write structure for mode 3 since headers are in separate file
+    if mode == 3:
+        metadata_lines.append(f"#STRUCTURE=\n")
+    elif structure:
         metadata_lines.append(f"#STRUCTURE={structure}\n")
     else:
         metadata_lines.append(f"#STRUCTURE=\n")
@@ -401,7 +431,9 @@ def main():
     seq_group.add_argument("--rm_repeat_hdr", type=int, default=0, metavar="INT",
                            help="Remove repeating metadata from headers, store only at top (0/1) [0]")
     seq_group.add_argument("--adaptive_sample", type=int, default=10, metavar="INT",
-                       help="Number of headers to analyze for adaptive pattern detection [10]")
+                           help="Number of headers to analyze for adaptive pattern detection [10]")
+    parser.add_argument("--mode3_headers", type=str, default=None, metavar="STR",
+                           help="Path to headers file for mode 3 reconstruction (read mode) [null]")
 
     # Encoding/Grayscale Group
     gray_group = parser.add_argument_group("ENCODING & GRAYSCALE")
@@ -528,7 +560,8 @@ def main():
         num_workers=args.workers,
         chunk_size_mb=args.chunk_mb,
         adaptive_sample_size=args.adaptive_sample, 
-        mode=args.mode
+        mode=args.mode,
+        mode3_input_headers=args.mode3_headers
     )
 
     end_time = time.perf_counter()
