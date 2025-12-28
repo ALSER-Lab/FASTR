@@ -517,7 +517,7 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table, 
                                        base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
-                                       mode):
+                                       mode, headers_list):
     """
     Worker function that processes a single chunk of binary sequence data in parallel.
     """
@@ -660,15 +660,19 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 bases_array = reverse_map[seq_array]
                 bases = bases_array.tobytes().decode('ascii')
                 
-                # make header from structure template prefix only
-                if current_metadata and current_metadata.structure_template:
-                    # take only the constant prefix before first {REPEATING_X}
-                    header_prefix = find_structure_prefix(current_metadata.structure_template)
-                    header = f"@{header_prefix}" if header_prefix else "@seq"
-                elif sra_accession:
-                    header = f"@{sra_accession}"
+                # Get header from headers_list if available
+                if headers_list and sequence_count < len(headers_list):
+                    header = headers_list[sequence_count].rstrip(b'\r\n').decode('utf-8', errors='ignore')
+                    if not header.startswith('@'):
+                        header = f"@{header}"
                 else:
-                    header = "@seq"
+                    if current_metadata and current_metadata.structure_template: 
+                        header_prefix = find_structure_prefix(current_metadata.structure_template)
+                        header = f"@{header_prefix}.{sequence_count}" if header_prefix else f"@seq{sequence_count}"
+                    elif sra_accession:
+                        header = f"@{sra_accession}.{sequence_count}"
+                    else:
+                        header = f"@seq{sequence_count}"
                 
                 # Reconstruct quality
                 if current_inverse_table is not None:
@@ -827,12 +831,23 @@ def reconstruct_fastq(input_path: str, output_path: str,
                      gray_N: int = 0, gray_A: int = 3, gray_G: int = 66,
                      gray_C: int = 129, gray_T: int = 192, phred_alphabet_max: int = None,
                      phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4,
-                     mode: int = 2):
+                     mode: int = 2, mode3_headers_file: str = None):
     """
     Reconstruct FASTQ file from FASTR using parallel processing.
     """
     print(f"Reading FASTR: {input_path}")
     print(f"Reconstruction mode: {mode}")
+    
+    # Load headers file for mode 3
+    headers_list = None
+    if mode == 3 and mode3_headers_file:
+        print(f"Loading headers from: {mode3_headers_file}")
+        with open(mode3_headers_file, 'rb') as hf:
+            headers_list = hf.readlines()
+        print(f"Loaded {len(headers_list):,} headers")
+    elif mode == 3 and not mode3_headers_file:
+        print("WARNING: Mode 3 requires --headers_file argument")
+        print("Proceeding without headers - will use fallback header generation")
     
     with open(input_path, 'rb') as f:
         data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
@@ -878,7 +893,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 inverse_tables.append(inverse_table)
         
         if not inverse_tables and mode == 1:
-            # Mode 1 without metadata - create default inverse table
+            # Mode 1 without metadata, so we'll create default inverse table
             inverse_tables.append(np.arange(64, dtype=int))
     
     base_ranges = {
@@ -903,9 +918,9 @@ def reconstruct_fastq(input_path: str, output_path: str,
             
             # Find boundary based on mode
             if mode in [2, 3]:
-                # Mode 2: Split on '<' markers
+                # Mode 2/3: Split on 255 markers
                 search_start = max(pos, chunk_end - 1000)
-                last_marker = buffer.rfind(b'<', search_start, chunk_end)
+                last_marker = buffer.rfind(b'\xff', search_start, chunk_end)
                 
                 if last_marker != -1 and last_marker > pos:
                     seq_end = buffer.find(b'\n', last_marker)
@@ -924,8 +939,9 @@ def reconstruct_fastq(input_path: str, output_path: str,
             
             if chunk_binary:
                 actual_start_in_chunk = pos - overlap_start
-                if mode == 2:
-                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'<')
+                if mode in [2, 3]:
+                    # Count 255 markers for mode 2/3
+                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'\xff')
                 else:
                     estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'\n@')
                 
@@ -957,7 +973,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 sra_accession=sra_accession,
-                mode=mode
+                mode=mode,
+                headers_list=headers_list 
             )
             
             for chunk_id, fastq_text, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
@@ -980,6 +997,9 @@ def main():
     # Mode selection
     parser.add_argument("--mode", type=int, default=2, choices=[0, 1, 2, 3],
                         help="Conversion mode: 0=headers only, 1=bases only, 2=both, 3=no repeating headers (default: 2)")
+    parser.add_argument("--headers_file", type=str, default=None,
+                        help="Path to headers file for mode 3 reconstruction")
+    
     
     # Quality parameters
     parser.add_argument("--phred_offset", type=int, default=33,
@@ -1022,7 +1042,8 @@ def main():
         phred_offset=args.phred_offset,
         chunk_size_mb=args.chunk_size_mb,
         num_workers=args.num_workers,
-        mode=args.mode
+        mode=args.mode,
+        mode3_headers_file=args.headers_file
     )
     
     end_time = time.perf_counter()
