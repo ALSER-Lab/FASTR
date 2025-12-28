@@ -12,7 +12,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
                                phred_alphabet_max: int, min_quality: int, keep_bases: bool,
                                binary: bool, keep_quality: bool,
                                remove_repeating_header: bool, compress_headers: bool,
-                               BYTE_LOOKUP: np.ndarray):
+                               BYTE_LOOKUP: np.ndarray, headers_buffer=None):
     """
     Process quality scaling on records and write to file.
     Applies quality-based transformations and outputs in specified format.
@@ -57,8 +57,11 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
     
     # Write all sequences
     for idx, record in enumerate(records):
+        # Write headers to separate file if headers_buffer provided
+        if headers_buffer is not None:
+            headers_buffer.write(record.original_header) 
         # Only write headers if remove_repeating_header is disabled
-        if not remove_repeating_header:
+        elif not remove_repeating_header:
             outfile.write(record.header)
 
         if not keep_bases:

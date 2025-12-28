@@ -10,6 +10,7 @@ class FASTQRecord:
     quality: np.ndarray
     pair_number: int = 0
     quality_string: bytes = b''
+    original_header: bytes = b''
 
 def detect_pair_number(header: str) -> int:
     """

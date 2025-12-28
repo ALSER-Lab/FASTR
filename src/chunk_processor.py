@@ -11,7 +11,8 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
                         keep_quality, quality_scaling, custom_formula,
                         phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
                         remove_repeating_header, adaptive_structure, 
-                        adaptive_delimiter, adaptive_sample_size):
+                        adaptive_delimiter, adaptive_sample_size,
+                        extract_headers=False):
     """
     Worker function that processes a single chunk in parallel.
     Parses FASTQ records and applies transformations.
@@ -35,16 +36,20 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
         
         # Process records and write to in-memory buffer
         output_buffer = io.BytesIO()
+        headers_buffer = io.BytesIO() if extract_headers else None
+
         if records:
             process_and_write_records(
                 records, output_buffer, base_map, quality_scaling,
                 custom_formula, phred_alphabet_max, min_quality, keep_bases,
                 binary, keep_quality,
-                remove_repeating_header, compress_headers, BYTE_LOOKUP
+                remove_repeating_header, compress_headers, BYTE_LOOKUP,
+                headers_buffer=headers_buffer
             )
         
         print(f"Worker completed chunk {chunk_id}")
-        return (chunk_id, output_buffer.getvalue(), metadata, structure, delimiter, count)
+        headers_data = headers_buffer.getvalue() if headers_buffer else None 
+        return (chunk_id, output_buffer.getvalue(), metadata, structure, delimiter, count, headers_data)
         
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")
