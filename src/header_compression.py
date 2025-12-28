@@ -9,7 +9,7 @@ PACBIO_HIFI_PATTERN = re.compile(r'@+([^/]+)/(\d+)/ccs(?:/(\w+))?')
 PACBIO_SUBREAD_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)')
 PACBIO_CLR_PATTERN = re.compile(r'@+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+RQ=[\d.]+)?')
 OLD_ILLUMINA_PATTERN = re.compile(r'@([^:]+):(\d+):(\d+):(\d+):(\d+)#([A-Za-z0-9]+)/(\d+)')
-SRR_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)(?:\s+(.*))?')
+SRA_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)(?:\s+(.*))?')
 
 # SRA HYBRIDS
 SRA_PACBIO_HIFI_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^/]+)/(\d+)/ccs(?:\s+(.*))?')
@@ -24,7 +24,7 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
         return '/'
     elif sequencer_type == 'ont':
         return ':'
-    elif sequencer_type == 'srr':
+    elif sequencer_type == 'sra':
         return '.'
     return ':'
 
@@ -110,8 +110,8 @@ def parse_ont_header(header: str) -> Tuple[Dict, str, str]:
     return common, unique_id, structure
 
 
-def parse_srr_header(header: str) -> Tuple[Dict, str, str]:
-    match = SRR_PATTERN.match(header)
+def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRA_PATTERN.match(header)
     if not match:
         return {}, header, ""
     
@@ -324,7 +324,7 @@ def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str, str]:
         'pacbio_clr': parse_pacbio_clr_header,
         'pacbio_subread': parse_pacbio_subread_header,
         'ont': parse_ont_header,
-        'srr': parse_srr_header,
+        'sra': parse_sra_header,
         'pacbio_hifi_sra': parse_pacbio_hifi_sra_header,
         'pacbio_clr_sra': parse_pacbio_clr_sra_header,
         'ont_sra': parse_ont_sra_header,
@@ -440,7 +440,7 @@ def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
     parts = header.strip().split()
     if len(parts) < 2: 
         return {}, header, ""
-    
+
     sra_acc = parts[0][1:]
     accession = sra_acc.split('.')[0] if '.' in sra_acc else sra_acc
     
@@ -457,8 +457,8 @@ def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     return common, unique_id, structure
 
-def parse_srr_header(header: str) -> Tuple[Dict, str, str]:
-    match = SRR_PATTERN.match(header)
+def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
+    match = SRA_PATTERN.match(header)
     if not match:
         return {}, header, ""
     

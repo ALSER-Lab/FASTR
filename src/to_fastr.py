@@ -76,14 +76,6 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
         if sra_accession:
             outfile.write(f"#{sra_accession}\n".encode('utf-8'))
         
-        # Reserve space for metadata headers (we'll come back to write these)
-        metadata_position = outfile.tell()
-        MAX_METADATA_LINES = 20
-        placeholder_size = MAX_METADATA_LINES * 200  # 200 chars per line
-        if sequencer_type != 'none':
-            outfile.write(b' ' * placeholder_size)  # Write spaces as placeholder
-            outfile.write(b'\n')
-        
         # Create chunk generator
         chunk_gen = chunk_generator(fastq_path, chunk_size_bytes)
         first_chunk_data = next(chunk_gen)  # Process FIRST chunk to get structure/delimiter
@@ -108,17 +100,16 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             adaptive_sample_size=adaptive_sample_size,
             extract_headers=extract_headers
         )
-        chunk_id, processed_bytes, metadata, structure_template, delimiter, count, headers_data, = worker_func_first(first_chunk_data)
-        
-        outfile.write(processed_bytes)
-        if extract_headers and headers_data:
-            headers_file.write(headers_data)
+        chunk_id, first_processed_bytes, metadata, structure_template, delimiter, count, first_headers_data = worker_func_first(first_chunk_data)
         
         total_sequences = count
         
         if metadata:
             current_flowcell_metadata = metadata
             flowcell_start_index = 0
+        
+        # Store first chunk data to write after metadata
+        chunks_to_write = [(first_processed_bytes, first_headers_data)]
         
         # Create worker pool and process chunks as they come in
         with Pool(processes=num_workers) as pool:
@@ -142,7 +133,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 adaptive_structure=structure_template,
                 adaptive_delimiter=delimiter, 
                 adaptive_sample_size=adaptive_sample_size,
-                extract_headers=extract_headers  # New parameter
+                extract_headers=extract_headers 
             )
             
             # Use imap to process chunks as they're read (streaming)
@@ -152,10 +143,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 chunk_gen, 
                 chunksize=1
             ):
-                # Write immediately as each chunk completes
-                outfile.write(processed_bytes)
-                if extract_headers and headers_data:
-                    headers_file.write(headers_data)
+                # Collect chunks to write after metadata
+                chunks_to_write.append((processed_bytes, headers_data))
                 
                 # Capture structure template from first chunk
                 if structure and structure_template is None:
@@ -206,11 +195,9 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
-        # Go back and write metadata headers at the beginning
+        # Write metadata headers at the beginning
+        # Much better than reserving useless space (like we did in previous commits)!
         if sequencer_type != 'none' or mode is not None:
-            end_position = outfile.tell()
-            outfile.seek(metadata_position)
-            
             metadata_lines = []
             metadata_lines.append(f"#MODE={mode}\n")
             
@@ -239,15 +226,14 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                                         paired_end, paired_end_mode, quality_scaling,
                                         custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map, mode)
             
-            # Write metadata and pad remaining space
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')
             outfile.write(metadata_bytes)
-            remaining = placeholder_size - len(metadata_bytes)
-            if remaining > 0:
-                outfile.write(b' ' * remaining)
-            outfile.write(b'\n')
-            
-            outfile.seek(end_position)  # Return to end
+        
+        # Write all collected sequence data
+        for processed_bytes, headers_data in chunks_to_write:
+            outfile.write(processed_bytes)
+            if extract_headers and headers_data:
+                headers_file.write(headers_data)
     
     if extract_headers and headers_file:
         headers_file.close()
@@ -328,7 +314,7 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
         sample_id = metadata.get('sampleid', '')
         run_number = metadata.get('runid', '')
     
-    elif sequencer_type == 'srr':
+    elif sequencer_type == 'sra':
         prefix = metadata.get('prefix', '')
         accession_num = metadata.get('accession', '')
         if prefix and accession_num:
@@ -413,12 +399,12 @@ def main():
     seq_group = parser.add_argument_group("SEQUENCER & HEADERS")
     seq_group.add_argument("--seq_type", type=str, metavar="STR",
                            choices=['none', 'adaptive', 'illumina', 'pacbio_ccs', 'pacbio_hifi', 
-                                    'pacbio_subread', 'pacbio_clr', 'ont', 'srr', 'old_illumina',
+                                    'pacbio_subread', 'pacbio_clr', 'ont', 'sra', 'old_illumina',
                                     'pacbio_hifi_sra', 'pacbio_clr_sra', 'ont_sra', 'illumina_sra'],
         default='adaptive',
         help=(
             "Sequencer type for header compression. [adaptive]\n"
-            "Standard: {'illumina', 'pacbio_hifi', 'pacbio_clr', 'ont', 'srr', 'old_illumina'}\n"
+            "Standard: {'illumina', 'pacbio_hifi', 'pacbio_clr', 'ont', 'sra', 'old_illumina'}\n"
             "SRA Hybrid: {'illumina_sra', 'pacbio_hifi_sra', 'pacbio_clr_sra', 'ont_sra'}"
         )
     )
