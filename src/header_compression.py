@@ -102,33 +102,11 @@ def parse_ont_header(header: str) -> Tuple[Dict, str, str]:
     if not parts:
         return {}, header, ""
     
-    read_id = parts[0][1:] if parts[0].startswith('@') else parts[0]
+    header_content = header[1:] if header.startswith('@') else header
     
-    kvs = {}
-    for part in parts[1:]:
-        if '=' in part:
-            key, value = part.split('=', 1)
-            kvs[key] = value
-    
-    common_keys = ['runid', 'sampleid', 'model_version_id', 'basecall_model_version_id']
-    common = {k: kvs[k] for k in common_keys if k in kvs}
-    
-    field_keys = []
-    field_values = []
-    for key, value in kvs.items():
-        if key not in common_keys:
-            field_keys.append(key)
-            field_values.append(value)
-    
-    if field_keys:
-        structure_fields = ' '.join([f"{key}={{REPEATING_{i+2}}}" for i, key in enumerate(field_keys)])
-        structure = f"{read_id} {{REPEATING_1}} {structure_fields}"
-        unique_id = f"{parts[1] if len(parts) > 1 and '=' not in parts[1] else ''}:" + ':'.join(field_values)
-        unique_id = unique_id.lstrip(':')
-    else:
-        structure = f"{read_id} {{REPEATING_1}}"
-        unique_id = parts[1] if len(parts) > 1 and '=' not in parts[1] else read_id
-    
+    common = {}
+    structure = "{REPEATING_1}"
+    unique_id = header_content.strip()
     return common, unique_id, structure
 
 
@@ -413,10 +391,10 @@ def parse_pacbio_hifi_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs {{REPEATING_3}}"
-        unique_id = f"{spot}:{hole}:{extra_fields}"
+        unique_id = f"{spot}/{hole}/{extra_fields}"
     else:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs"
-        unique_id = f"{spot}:{hole}"
+        unique_id = f"{spot}/{hole}"
     
     if has_length:
         common['has_length'] = True
@@ -448,10 +426,10 @@ def parse_pacbio_clr_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}} {{REPEATING_5}}"
-        unique_id = f"{spot}:{hole}:{start_pos}_{end_pos}:{extra_fields}"
+        unique_id = f"{spot}/{hole}/{start_pos}_{end_pos}/{extra_fields}"
     else:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}}"
-        unique_id = f"{spot}:{hole}:{start_pos}_{end_pos}"
+        unique_id = f"{spot}/{hole}/{start_pos}_{end_pos}"
     
     if has_length:
         common['has_length'] = True
@@ -465,48 +443,19 @@ def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     sra_acc = parts[0][1:]
     accession = sra_acc.split('.')[0] if '.' in sra_acc else sra_acc
-    spot = sra_acc.split('.')[-1] if '.' in sra_acc else ''
-    read_uuid = parts[1]
     
-    kvs = {p.split('=')[0]: p.split('=')[1] for p in parts[2:] if '=' in p}
+    filtered_parts = []
+    for part in parts:
+        if not part.lower().startswith('length='):
+            filtered_parts.append(part)
     
-    common = {
-        'sra': accession,
-        'runid': kvs.get('runid', ''),
-        'sampleid': kvs.get('sampleid', '')
-    }
+    common = {'sra': accession, 'has_length': True}
     
-    has_length = 'length' in kvs
+    structure = f"{accession}.{{REPEATING_1}}"
     
-    field_keys = []
-    field_values = []
-    for key, value in kvs.items():
-        if key not in ['length', 'runid', 'sampleid']:
-            field_keys.append(key)
-            field_values.append(value)
-    
-    if spot:
-        if field_keys:
-            structure_fields = ' '.join([f"{key}={{REPEATING_{i+3}}}" for i, key in enumerate(field_keys)])
-            structure = f"{accession}.{{REPEATING_1}} {{REPEATING_2}} {structure_fields}"
-            unique_id = f"{spot}:{read_uuid}:" + ':'.join(field_values)
-        else:
-            structure = f"{accession}.{{REPEATING_1}} {{REPEATING_2}}"
-            unique_id = f"{spot}:{read_uuid}"
-    else:
-        if field_keys:
-            structure_fields = ' '.join([f"{key}={{REPEATING_{i+2}}}" for i, key in enumerate(field_keys)])
-            structure = f"{accession} {{REPEATING_1}} {structure_fields}"
-            unique_id = f"{read_uuid}:" + ':'.join(field_values)
-        else:
-            structure = f"{accession} {{REPEATING_1}}"
-            unique_id = f"{read_uuid}"
-    
-    if has_length:
-        common['has_length'] = True
+    unique_id = ' '.join(filtered_parts[1:])
     
     return common, unique_id, structure
-
 
 def parse_srr_header(header: str) -> Tuple[Dict, str, str]:
     match = SRR_PATTERN.match(header)

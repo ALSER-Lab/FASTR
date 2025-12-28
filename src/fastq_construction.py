@@ -25,7 +25,7 @@ def find_structure_prefix(structure_template: str) -> str:
     if not structure_template:
         return ""
     
-    # Find first occurrence of {REPEATING_
+    # Find first occurrence of {REPEATING_}
     match = re.search(r'\{REPEATING_\d+\}', structure_template)
     
     if match:
@@ -37,12 +37,13 @@ def find_structure_prefix(structure_template: str) -> str:
     return structure_template
 
 
-def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], int, Optional[str]]:
+def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], int, Optional[str], Optional[int]]:
     """
     Parse metadata headers from the beginning of the file in order to reconstruct it later
     """
     metadata_blocks = []
     sra_accession = None
+    phred_alphabet_from_metadata = None
     
     if mode == 1:
         # Mode 1: Only bases compressed (no header compression)
@@ -68,12 +69,17 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             line_idx = 0
             
             # Check for SRA accession
-            if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'STRUCTURE:']):
+            if lines and lines[0].startswith('#') and '=' not in lines[0]:
                 sra_accession = lines[0][1:]
                 print(f"Found SRA accession: {sra_accession}")
                 line_idx = 1
             
             # Process metadata lines
+            current_mode = None
+            current_seq_type = None
+            current_structure = None
+            current_qual_scale = None
+            
             while line_idx < len(lines):
                 line = lines[line_idx]
                 
@@ -84,54 +90,63 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                 if line.startswith('<'):
                     break
                 
-                if line.startswith('#STRUCTURE:'):
-                    structure_template = line.split(':', 1)[1].strip()
-                    print(f"Found STRUCTURE metadata: {structure_template}")
+                if line.startswith('#MODE='):
+                    current_mode = line.split('=', 1)[1].strip()
                     line_idx += 1
                     continue
                 
-                if line.startswith('#SEQUENCER:'):
-                    sequencer_type = line.split(':', 1)[1].strip()
+                if line.startswith('#SEQ-TYPE='):
+                    current_seq_type = line.split('=', 1)[1].strip()
+                    line_idx += 1
+                    continue
+                
+                if line.startswith('#PHRED-ALPHABET='):
+                    phred_str = line.split('=', 1)[1].strip()
+                    if phred_str.startswith('PHRED_'):
+                        try:
+                            phred_alphabet_from_metadata = int(phred_str.split('_')[1]) - 1
+                            print(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
+                        except:
+                            pass
+                    line_idx += 1
+                    continue
+                
+                if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
+                    # Always split on '=' first since that's our actual delimiter
+                    if line.startswith('#STRUCTURE='):
+                        current_structure = line.split('=', 1)[1].strip()
+                    else:
+                        current_structure = line.split(':', 1)[1].strip()
+                    print(f"Found STRUCTURE metadata: {current_structure}")
+                    line_idx += 1
+                    continue
+                
+                if line.startswith('#QUAL_SCALE='):
+                    current_qual_scale = line.split('=', 1)[1].strip()
+                    print(f"Found equation: {current_qual_scale}")
                     
-                    structure_template = None
-                    if line_idx > 0 and lines[line_idx - 1].startswith('#STRUCTURE:'):
-                        structure_template = lines[line_idx - 1].split(':', 1)[1].strip()
+                    if current_seq_type and current_qual_scale:
+                        metadata_blocks.append(MetadataBlock(
+                            structure_template=current_structure or "",
+                            sequencer_type=current_seq_type,
+                            scaling_equation=current_qual_scale,
+                            start_index=0,
+                            end_index=-1
+                        ))
                     
                     line_idx += 1
-                    
-                    scaling_equation = 'x'
-                    if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
-                        scaling_equation = lines[line_idx].split(':', 1)[1].strip()
-                        print(f"Found equation: {scaling_equation}")
-                        line_idx += 1
-                    
-                    start_index = 0
-                    end_index = -1
-                    
-                    if line_idx < len(lines) and lines[line_idx].startswith('#RANGE:'):
-                        range_str = lines[line_idx].split(':', 1)[1].strip()
-                        start_index, end_index = map(int, range_str.split('-'))
-                        print(f"Found range: {start_index}-{end_index}")
-                        line_idx += 1
-                    
-                    metadata_blocks.append(MetadataBlock(
-                        structure_template=structure_template or "",
-                        sequencer_type=sequencer_type,
-                        scaling_equation=scaling_equation,
-                        start_index=start_index,
-                        end_index=end_index
-                    ))
-                else:
-                    line_idx += 1
+                    continue
+                
+                line_idx += 1
         
-        # Find actual data start (first @ header)
+        # Find actual data start which is the first @ header
         actual_data_start = first_header if first_header > 0 else 0
-        return metadata_blocks, actual_data_start, sra_accession
+        return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata
     
     # Mode 0, 2, and 3: Header compression enabled
     first_seq_marker = data.find(b'<') if mode in [2, 3] else data.find(b'\n@')
     if first_seq_marker == -1:
-        return metadata_blocks, 0, sra_accession
+        return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata
     
     # Find the @ before the first < (where sequence actually starts)
     search_start = max(0, first_seq_marker - 1000)
@@ -156,12 +171,17 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     line_idx = 0
     
     # Check for SRA accession
-    if lines and lines[0].startswith('#') and not any(x in lines[0] for x in ['SEQUENCER', 'RANGE', 'STRUCTURE:']):
+    if lines and lines[0].startswith('#') and '=' not in lines[0]:
         sra_accession = lines[0][1:]
         print(f"Found SRA accession: {sra_accession}")
         line_idx = 1
     
     # Process metadata lines
+    current_mode = None
+    current_seq_type = None
+    current_structure = None
+    current_qual_scale = None
+
     while line_idx < len(lines):
         line = lines[line_idx]
         
@@ -176,45 +196,55 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         if line.startswith('<'):
             break
         
-        if line.startswith('#STRUCTURE:'):
-            structure_template = line.split(':', 1)[1].strip()
-            print(f"Found STRUCTURE metadata: {structure_template}")
+        if line.startswith('#MODE='):
+            current_mode = line.split('=', 1)[1].strip()
             line_idx += 1
             continue
         
-        if line.startswith('#SEQUENCER:'):
-            sequencer_type = line.split(':', 1)[1].strip()
-                    
-            structure_template = None
-            if line_idx > 0 and lines[line_idx - 1].startswith('#STRUCTURE:'):
-                structure_template = lines[line_idx - 1].split(':', 1)[1].strip()
-                line_idx += 1
-                scaling_equation = 'x'
-                if line_idx < len(lines) and lines[line_idx].startswith('#QUAL_SCALE:'):
-                    scaling_equation = lines[line_idx].split(':', 1)[1].strip()
-                    print(f"Found equation: {scaling_equation}")
-                    line_idx += 1
-            
-            start_index = 0
-            end_index = -1
-            
-            if line_idx < len(lines) and lines[line_idx].startswith('#RANGE:'):
-                range_str = lines[line_idx].split(':', 1)[1].strip()
-                start_index, end_index = map(int, range_str.split('-'))
-                print(f"Found range: {start_index}-{end_index}")
-                line_idx += 1
-            
-            metadata_blocks.append(MetadataBlock(
-                structure_template=structure_template or "",
-                sequencer_type=sequencer_type,
-                scaling_equation=scaling_equation,
-                start_index=start_index,
-                end_index=end_index
-            ))
-        else:
+        if line.startswith('#SEQ-TYPE='):
+            current_seq_type = line.split('=', 1)[1].strip()
             line_idx += 1
-    
-    return metadata_blocks, actual_data_start, sra_accession
+            continue
+        
+        if line.startswith('#PHRED-ALPHABET='):
+            phred_str = line.split('=', 1)[1].strip()
+            if phred_str.startswith('PHRED_'):
+                try:
+                    phred_alphabet_from_metadata = int(phred_str.split('_')[1]) - 1
+                    print(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
+                except:
+                    pass
+            line_idx += 1
+            continue
+        
+        if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
+            if line.startswith('#STRUCTURE='):
+                current_structure = line.split('=', 1)[1].strip()
+            else:
+                current_structure = line.split(':', 1)[1].strip()
+            print(f"Found STRUCTURE metadata: {current_structure}")
+            line_idx += 1
+            continue
+        
+        if line.startswith('#QUAL_SCALE='):
+            current_qual_scale = line.split('=', 1)[1].strip()
+            print(f"Found equation: {current_qual_scale}")
+            line_idx += 1
+            continue
+        
+        line_idx += 1
+
+    if current_seq_type and current_qual_scale:
+        metadata_blocks.append(MetadataBlock(
+            structure_template=current_structure or "",
+            sequencer_type=current_seq_type,
+            scaling_equation=current_qual_scale,
+            start_index=0,
+            end_index=-1
+    ))
+            
+    return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata
+
 
 
 def get_delimiter_for_sequencer(sequencer_type: str) -> str:
@@ -228,6 +258,25 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
     elif sequencer_type == 'srr':
         return ':'
     return ':'
+
+def parse_ont_unique_id(unique_id: str):
+    """Parse ONT unique_id which contains key=value pairs"""
+    parts = unique_id.strip().split(':')
+    
+    if parts and '=' not in parts[0]: # First part might not be a kvp but rather a prefix
+        prefix = parts[0]
+        kv_parts = parts[1:]
+    else:
+        prefix = ''
+        kv_parts = parts
+    
+    kvs = {}
+    for part in kv_parts:
+        if '=' in part:
+            k, v = part.split('=', 1)
+            kvs[k] = v
+    
+    return prefix, kvs
 
 
 def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_type: str, pair_number: int = 0) -> str:
@@ -272,14 +321,46 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
             for i, part in enumerate(unique_parts, 1):
                 placeholder = f"{{REPEATING_{i}}}"
                 result = result.replace(placeholder, part, 1)
-    else: # Normal sequencer types
+
+    elif sequencer_type == 'ont':
+        result = unique_id
+        
+        if pair_number > 0:
+            result = f"{result}/{pair_number}"
+        
+        return f"@{result}"
+    
+    elif sequencer_type == 'ont_sra':
+        result = structure.replace('{REPEATING_1}', unique_id)
+        
+        if pair_number > 0:
+            result = f"{result}/{pair_number}"
+        
+        return f"@{result}"
+
+    else:  # Non-adaptive sequencer types
         delimiter = get_delimiter_for_sequencer(sequencer_type)
-        unique_parts = unique_id.split(delimiter)
+        
+        # Special handling for PacBio formats that use underscore sub-delimiter
+        if sequencer_type in ['pacbio_clr', 'pacbio_subread', 'pacbio_clr_sra']:
+            # Split by primary delimiter first
+            parts = unique_id.split(delimiter)
+            unique_parts = []
+            for part in parts:
+                # If part contains underscore, split it too
+                if '_' in part:
+                    unique_parts.extend(part.split('_'))
+                else:
+                    unique_parts.append(part)
+        else:
+            unique_parts = unique_id.split(delimiter)
+        
         result = structure
         for i, part in enumerate(unique_parts, 1):
             placeholder = f"{{REPEATING_{i}}}"
             result = result.replace(placeholder, part)
     
+    # Add pair number if present (applies to both adaptive and non-adaptive)
     if pair_number > 0:
         result = f"{result}/{pair_number}"
     
@@ -350,24 +431,24 @@ def build_formula_func(formula: str):
     return formula_func
 
 
-def create_base_map():
+def create_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
     base_table = np.zeros(256, dtype=np.int32)
-    base_table[1:64] = 1
-    base_table[65:128] = 65
-    base_table[129:192] = 129
-    base_table[193:256] = 193
+    base_table[gray_N:gray_A] = gray_N
+    base_table[gray_A:gray_G] = gray_A
+    base_table[gray_G:gray_C] = gray_G
+    base_table[gray_C:gray_T] = gray_C
+    base_table[gray_T:255] = gray_T # Never reaches 254 (reserved for indicator of sequence start)
     return base_table
 
-def reverse_base_map(gray_N=1, gray_A=63, gray_T=127, gray_C=191, gray_G=255):
-    reverse_map = np.full(256, ord('N'), dtype=np.uint8)
-    reverse_map[1:64] = ord('A')
-    reverse_map[65:128] = ord('T')
-    reverse_map[129:193] = ord('C')
-    reverse_map[193:256] = ord('G')
-    reverse_map[[gray_N, gray_A, gray_T, gray_C, gray_G]] = [ord('N'), ord('A'), ord('T'), ord('C'), ord('G')]
-    
-    return reverse_map
 
+def reverse_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
+    reverse_map = np.full(256, ord('N'), dtype=np.uint8) # Default to 'N'
+    reverse_map[gray_N:gray_A] = ord('N')
+    reverse_map[gray_A:gray_G] = ord('A')
+    reverse_map[gray_G:gray_C] = ord('G')
+    reverse_map[gray_C:gray_T] = ord('C')
+    reverse_map[gray_T:255] = ord('T') # Never reaches 254 (reserved for indicator of sequence start)
+    return reverse_map
 
 def reverse_scaling_to_quality(binary_values: np.ndarray,
                                        subtract_table: np.ndarray,
@@ -610,76 +691,81 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 
                 i += 1
 
-        
-        # Mode 2: Headers compressed, bases as binary (original behavior)
+        # Mode 2: Headers compressed, bases as binary
         else:
             while pos < len(chunk_binary):
                 if chunk_binary[pos:pos+1] != b'<':
                     pos += 1
                     continue
-                
-                pos += 1
-                
-                seq_end = chunk_binary.find(b'\n', pos)
-                if seq_end == -1:
-                    if pos < len(chunk_binary):
-                        seq_end = len(chunk_binary)
-                    else:
-                        break
-                
-                seq_data = chunk_binary[pos:seq_end]
-                
-                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                    next_metadata = metadata_blocks[current_metadata_idx + 1]
-                    if sequence_count >= next_metadata.start_index:
-                        current_metadata = next_metadata
-                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                        current_metadata_idx += 1
-                
-                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-                bases_array = reverse_map[seq_array]
-                bases = bases_array.tobytes().decode('ascii')
-                
-                header_search_start = max(0, pos - 500)
-                header_section = chunk_binary[header_search_start:pos]
 
+                line_start = chunk_binary.rfind(b'\n@', max(0, pos - 500), pos)
+                
+                if line_start == -1:
+                    # Check if file starts with @
+                    if chunk_binary[:1] == b'@':
+                        line_start = -1  # Will become 0 after +1
+                    else:
+                        # No header found, use default
+                        pos += 1
+                        seq_end = chunk_binary.find(b'\n', pos)
+                        if seq_end == -1:
+                            seq_end = len(chunk_binary) if pos < len(chunk_binary) else pos
+                        
+                        seq_data = chunk_binary[pos:seq_end]
+                        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                        bases_array = reverse_map[seq_array]
+                        bases = bases_array.tobytes().decode('ascii')
+                        
+                        header = f"@{sra_accession}" if sra_accession else "@seq"
+                        
+                        if current_inverse_table is not None:
+                            quality_scores = reverse_scaling_to_quality(
+                                seq_array, subtract_table,
+                                current_inverse_table, max_phred=phred_alphabet_max
+                            )
+                            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                        else:
+                            quality_string = 'I' * len(bases)
+                        
+                        output_buffer.append(header.encode('ascii'))
+                        output_buffer.append(b'\n')
+                        output_buffer.append(bases.encode('ascii'))
+                        output_buffer.append(b'\n+\n')
+                        output_buffer.append(quality_string.encode('ascii'))
+                        output_buffer.append(b'\n')
+                        sequence_count += 1
+                        pos = seq_end + 1
+                        continue
+                
+                header_start = line_start + 2  # Skip '\n@'
+                if line_start == -1:
+                    header_start = 1  # Skip just '@' at start of file
+                
+                # Find the end of the header line (the \n before <)
+                header_end = chunk_binary.rfind(b'\n', header_start, pos)
+                if header_end == -1 or header_end < header_start:
+                    header_end = pos
+                
+                header_content = chunk_binary[header_start:header_end].decode('utf-8', errors='ignore').strip()
+                
                 unique_id = None
                 pair_number = 0
-
-                last_at = header_section.rfind(b'@')
-                if last_at != -1:
-                    header_line_start = header_search_start + last_at
-                    header_line_end = chunk_binary.find(b'\n', header_line_start)
-                    if header_line_end != -1 and header_line_end <= pos:
-                        header_content = chunk_binary[header_line_start+1:header_line_end].decode('utf-8', errors='ignore').strip()
-                        
-                        if '/' in header_content:
-                            parts = header_content.rsplit('/', 1)
-                            unique_id = parts[0]
-                            try:
-                                pair_number = int(parts[1])
-                            except:
-                                unique_id = header_content
-                        else:
-                            unique_id = header_content
-
-                elif pos <= 510 and chunk_binary[:pos].count(b'<') == 1:
-                    first_at = chunk_binary.find(b'@')
-                    if first_at != -1 and first_at < pos:
-                        header_line_end = chunk_binary.find(b'\n', first_at)
-                        if header_line_end != -1 and header_line_end < pos:
-                            header_content = chunk_binary[first_at+1:header_line_end].decode('utf-8', errors='ignore').strip()
-                            
-                            if '/' in header_content:
-                                parts = header_content.rsplit('/', 1)
-                                unique_id = parts[0]
-                                try:
-                                    pair_number = int(parts[1])
-                                except:
-                                    unique_id = header_content
-                            else:
-                                unique_id = header_content
                 
+                # Parse pair number if present
+                pair_number = 0
+                if '/' in header_content:
+                    parts = header_content.rsplit('/', 1)
+                    # Only treat as pair number if the last part is a single digit (1 or 2)
+                    if parts[1].isdigit() and len(parts[1]) == 1 and int(parts[1]) in [1, 2]:
+                        unique_id = parts[0]
+                        pair_number = int(parts[1])
+                    else:
+                        # Not a pair number, use full header_content as unique_id
+                        unique_id = header_content
+                else:
+                    unique_id = header_content
+                
+                # Reconstruct the full header
                 if unique_id and current_metadata and current_metadata.structure_template:
                     header = reconstruct_header_from_structure(
                         current_metadata.structure_template,
@@ -691,27 +777,47 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                     if sra_accession:
                         header = f"@{sra_accession}"
                     else:
-                        header = f"@seq"
+                        header = f"@seq" # Fallback header
                 
+                pos += 1  # Move past the '<'
+                
+                seq_end = chunk_binary.find(b'\n', pos)
+                if seq_end == -1:
+                    if pos < len(chunk_binary):
+                        seq_end = len(chunk_binary)
+                    else:
+                        break
+                
+                seq_data = chunk_binary[pos:seq_end]
+                
+                # Check for metadata block changes
+                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                    next_metadata = metadata_blocks[current_metadata_idx + 1]
+                    if sequence_count >= next_metadata.start_index:
+                        current_metadata = next_metadata
+                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                        current_metadata_idx += 1
+                
+                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                bases_array = reverse_map[seq_array]
+                bases = bases_array.tobytes().decode('ascii')
+                
+                # Reconstruct quality
                 if current_inverse_table is not None:
                     quality_scores = reverse_scaling_to_quality(
                         seq_array, subtract_table,
                         current_inverse_table, max_phred=phred_alphabet_max
                     )
                     quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-                else:
-                    quality_string = 'I' * len(bases)
-                
+
                 output_buffer.append(header.encode('ascii'))
                 output_buffer.append(b'\n')
                 output_buffer.append(bases.encode('ascii'))
                 output_buffer.append(b'\n+\n')
                 output_buffer.append(quality_string.encode('ascii'))
                 output_buffer.append(b'\n')
-                                
                 sequence_count += 1
                 pos = seq_end + 1
-            
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
         return (chunk_id, b''.join(output_buffer), sequence_count - start_seq_idx)
@@ -724,8 +830,8 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
 
 
 def reconstruct_fastq(input_path: str, output_path: str, 
-                     gray_N: int = 1, gray_A: int = 63, gray_T: int = 127,
-                     gray_C: int = 191, gray_G: int = 255, phred_alphabet_max: int = 41,
+                     gray_N: int = 0, gray_A: int = 3, gray_G: int = 66,
+                     gray_C: int = 129, gray_T: int = 192, phred_alphabet_max: int = None,
                      phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4,
                      mode: int = 2):
     """
@@ -740,7 +846,17 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"File size: {file_size:,} bytes ({file_size / (1024**2):.2f} MB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    metadata_blocks, data_start_byte, sra_accession = parse_metadata_header(data, mode)
+    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata = parse_metadata_header(data, mode)
+    
+    if phred_alphabet_max is None:
+        if phred_from_metadata is not None:
+            phred_alphabet_max = phred_from_metadata
+            print(f"Using PHRED alphabet from metadata: {phred_alphabet_max}")
+        else:
+            phred_alphabet_max = 41
+            print(f"No PHRED alphabet found in metadata, using default: {phred_alphabet_max}")
+    else:
+        print(f"Using user-specified PHRED alphabet (overriding metadata): {phred_alphabet_max}")
     
     if mode in [0, 2] and not metadata_blocks:
         print("WARNING: No metadata found for header reconstruction")
@@ -755,8 +871,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
     if sra_accession:
         print(f"SRA Accession: {sra_accession}")
     
-    reverse_map = reverse_base_map(gray_N, gray_A, gray_T, gray_C, gray_G)
-    subtract_table = create_base_map()
+    reverse_map = reverse_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
+    subtract_table = create_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
     inverse_tables = []
     
     inverse_tables = []
@@ -772,11 +888,11 @@ def reconstruct_fastq(input_path: str, output_path: str,
             inverse_tables.append(np.arange(64, dtype=int))
     
     base_ranges = {
-        'A': (1, 63),
-        'T': (65, 127),
-        'C': (129, 191),
-        'G': (193, 255),
-        'N': (1, 1)
+        'A': (3, 65),
+        'C': (66, 128),
+        'G': (129, 191),
+        'T': (192, 254),
+        'N': (0, 2)
     }
     
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
@@ -874,15 +990,15 @@ def main():
     # Quality parameters
     parser.add_argument("--phred_offset", type=int, default=33,
                         help="Phred quality offset for output (default: 33)")
-    parser.add_argument("--phred_alphabet", type=str, default='phred42',
-                        help="Phred alphabet used (phred42/phred63/phred94)")
+    parser.add_argument("--phred_alphabet", type=str, default=None,
+                        help="Phred alphabet override (phred42/phred63/phred94), defaults to metadata value")
     
     # Base mapping
-    parser.add_argument("--gray_N", type=int, default=1)
-    parser.add_argument("--gray_A", type=int, default=63)
-    parser.add_argument("--gray_T", type=int, default=127)
-    parser.add_argument("--gray_C", type=int, default=191)
-    parser.add_argument("--gray_G", type=int, default=255)
+    parser.add_argument("--gray_N", type=int, default=0)
+    parser.add_argument("--gray_A", type=int, default=3)
+    parser.add_argument("--gray_C", type=int, default=129)
+    parser.add_argument("--gray_G", type=int, default=66)
+    parser.add_argument("--gray_T", type=int, default=192)
     
     # Multiprocessing
     parser.add_argument("--chunk_size_mb", type=int, default=32,
@@ -892,14 +1008,14 @@ def main():
     
     args = parser.parse_args()
     
-    if args.phred_alphabet == "phred42":
-        phred_alphabet_max = 41
-    elif args.phred_alphabet == "phred63":
-        phred_alphabet_max = 62
-    elif args.phred_alphabet == "phred94":
-        phred_alphabet_max = 93
-    else:
-        phred_alphabet_max = 41
+    phred_alphabet_max = None
+    if args.phred_alphabet:
+        if args.phred_alphabet == "phred42":
+            phred_alphabet_max = 41
+        elif args.phred_alphabet == "phred63":
+            phred_alphabet_max = 62
+        elif args.phred_alphabet == "phred94":
+            phred_alphabet_max = 93
     
     start_time = time.perf_counter()
     
