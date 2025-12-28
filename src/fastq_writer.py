@@ -4,6 +4,9 @@ from data_structures import FASTQRecord
 from quality_processing import apply_quality_to_bases
 
 
+# Reserved sequence start marker as val of 255
+SEQUENCE_START_MARKER = np.uint8(255)
+
 def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
                                quality_scaling: str, custom_formula: Optional[str],
                                phred_alphabet_max: int, min_quality: int, keep_bases: bool,
@@ -57,12 +60,17 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         # Only write headers if remove_repeating_header is disabled
         if not remove_repeating_header:
             outfile.write(record.header)
-        
-        if not keep_bases: # Don't want to write out '<' when in first mode
-            outfile.write(b'<') # Add start marker for sequence
-        
+
+        if not keep_bases:
+            outfile.write(bytes([SEQUENCE_START_MARKER])) # Reserved 255 val
+
         seq_data = processed_seqs[idx]
         
+        if not keep_bases and np.any(seq_data == 255): # Don't want to write out 255
+            # This should never happen with proper base mapping, but safety check yk
+            print(f"WARNING: Sequence {idx} contains value 255, clamping to 254")
+            seq_data = np.clip(seq_data, 0, 254)
+
         # Write sequence data in appropriate format
         if binary:
             outfile.write(seq_data.tobytes())

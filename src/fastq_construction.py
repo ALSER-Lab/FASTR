@@ -144,7 +144,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata
     
     # Mode 0, 2, and 3: Header compression enabled
-    first_seq_marker = data.find(b'<') if mode in [2, 3] else data.find(b'\n@')
+    first_seq_marker = data.find(b'\xff') if mode in [2, 3] else data.find(b'\n@')  # We reserve \xff (255 in hex) for start of sequence indicator
     if first_seq_marker == -1:
         return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata
     
@@ -527,7 +527,6 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
         
         output_buffer = []
         sequence_count = start_seq_idx
-        pos = 0
         
         # Determine which metadata block to use for this chunk
         current_metadata_idx = 0
@@ -544,215 +543,186 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
         
         # Mode 1: Only bases compressed (original headers intact)
         if mode == 1:
-            lines = chunk_binary.split(b'\n')
-            i = 0
-            while i < len(lines):
-                if lines[i].startswith(b'@'):
-                    # Original header
-                    header = lines[i].decode('utf-8', errors='ignore')
-                    i += 1
-                    if i < len(lines) and lines[i].startswith(b'<'):
-                        # Binary sequence
-                        seq_data = lines[i][1:]  # Skip '<'
-                        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-                        bases_array = reverse_map[seq_array]
-                        bases = bases_array.tobytes().decode('ascii')
-                        
-                        # Reconstruct quality if inverse table available
-                        if current_inverse_table is not None:
-                            quality_scores = reverse_scaling_to_quality(
-                                seq_array, subtract_table,
-                                current_inverse_table, max_phred=phred_alphabet_max
-                            )
-                            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-                        else:
-                            # Generate default quality scores
-                            quality_string = 'I' * len(bases)
-                        
-                        output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n")
-                        sequence_count += 1
-                        i += 1
-                    else:
-                        i += 1
-                else:
-                    i += 1
-        
-        # Mode 0: Only headers compressed (bases as text)
-        elif mode == 0:
-            lines = chunk_binary.split(b'\n')
-            i = 0
-            while i < len(lines):
-                # Skip empty lines
-                if not lines[i].strip():
-                    i += 1
-                    continue
-                    
-                if lines[i].startswith(b'@'):
-                    # Compressed header - reconstruct it
-                    header_content = lines[i][1:].decode('utf-8', errors='ignore').strip()
-                    
-                    pair_number = 0
-                    if '/' in header_content:
-                        parts = header_content.rsplit('/', 1)
-                        unique_id = parts[0]
-                        try:
-                            pair_number = int(parts[1])
-                        except:
-                            unique_id = header_content
-                    else:
-                        unique_id = header_content
-                    
-                    if current_metadata and current_metadata.structure_template:
-                        header = reconstruct_header_from_structure(
-                            current_metadata.structure_template,
-                            unique_id,
-                            current_metadata.sequencer_type,
-                            pair_number
-                        )
-                    else:
-                        header = f"@{unique_id}"
-                    
-                    i += 1
-                    # Get sequence line (skip if empty)
-                    while i < len(lines) and not lines[i].strip():
-                        i += 1
-                    
-                    if i < len(lines):
-                        # Text bases
-                        bases = lines[i].decode('ascii', errors='ignore').strip()
-                        i += 1
-                        
-                        # Skip '+' line (and any empty lines before it)
-                        while i < len(lines) and not lines[i].strip():
-                            i += 1
-                        if i < len(lines) and lines[i].strip() == b'+':
-                            i += 1
-                        
-                        # Skip empty lines before quality
-                        while i < len(lines) and not lines[i].strip():
-                            i += 1
-                            
-                        # Get quality line
-                        if i < len(lines):
-                            quality_string = lines[i].decode('ascii', errors='ignore').strip()
-                            output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
-                            sequence_count += 1
-                            i += 1
-                else:
-                    i += 1
-
-        # Mode 3: No headers at all, just <bases on each line
-        elif mode == 3:
-            lines = chunk_binary.split(b'\n')
-            i = 0
-            while i < len(lines):
-                if lines[i].startswith(b'<'):
+            cursor = 0
+            while cursor < len(chunk_binary):
+                # Find the start of a header
+                header_start = chunk_binary.find(b'@', cursor)
+                if header_start == -1: break
+                
+                # Original header
+                header_end = chunk_binary.find(b'\n', header_start)
+                if header_end == -1: break
+                header = chunk_binary[header_start:header_end].decode('utf-8', errors='ignore')
+                
+                # Look for binary marker \xff after the header
+                marker_pos = chunk_binary.find(b'\xff', header_end)
+                if marker_pos != -1:
                     # Binary sequence
-                    seq_data = lines[i][1:]  # Skip '<'
+                    seq_start = marker_pos + 1
                     
-                    # Check if we need to switch metadata blocks
-                    if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                        next_metadata = metadata_blocks[current_metadata_idx + 1]
-                        if sequence_count >= next_metadata.start_index:
-                            current_metadata = next_metadata
-                            current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                            current_metadata_idx += 1
+                    # Find where this record ends (the next @ or end of chunk)
+                    next_record = chunk_binary.find(b'\n@', seq_start)
+                    seq_end = next_record if next_record != -1 else len(chunk_binary)
                     
+                    seq_data = chunk_binary[seq_start:seq_end].rstrip(b'\r\n') # Skip 255 marker
                     seq_array = np.frombuffer(seq_data, dtype=np.uint8)
                     bases_array = reverse_map[seq_array]
                     bases = bases_array.tobytes().decode('ascii')
                     
-                    # Generate header from structure template prefix only
-                    if current_metadata and current_metadata.structure_template:
-                        # Extract only the constant prefix before first {REPEATING_X}
-                        header_prefix = find_structure_prefix(current_metadata.structure_template)
-                        header = f"@{header_prefix}" if header_prefix else "@seq"
-                    elif sra_accession:
-                        header = f"@{sra_accession}"
-                    else:
-                        header = "@seq"
-                    
-                    # Reconstruct quality
+                    # Reconstruct quality if inverse table available
                     if current_inverse_table is not None:
                         quality_scores = reverse_scaling_to_quality(
                             seq_array, subtract_table,
                             current_inverse_table, max_phred=phred_alphabet_max
                         )
-                        quality_string = bytes((quality_scores + phred_offset).astype(np.uint8)).decode('ascii')
+                        quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
                     else:
-                        quality_string = 'I' * len(bases)
+                        quality_string = 'I' * len(bases) # If you see all I's (even when there shouldn't be) it means we had to fallback
                     
-                    output_buffer.append(f"{header}\n".encode('ascii'))
-                    output_buffer.append(bases.encode('ascii'))
-                    output_buffer.append(b"\n+\n")
-                    output_buffer.append(quality_string.encode('ascii'))
-                    output_buffer.append(b"\n")
+                    output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
                     sequence_count += 1
+                    cursor = seq_end
+                else:
+                    cursor = header_end + 1
+
+        elif mode == 0:
+            cursor = 0
+            while cursor < len(chunk_binary):
+                # Find start of record
+                start_idx = chunk_binary.find(b'@', cursor)
+                if start_idx == -1: break
                 
-                i += 1
+                header_end = chunk_binary.find(b'\n', start_idx)
+                if header_end == -1: break
+                
+                header_content = chunk_binary[start_idx+1:header_end].decode('utf-8', errors='ignore').strip()
+                
+                pair_number = 0
+                if '/' in header_content:
+                    parts = header_content.rsplit('/', 1)
+                    unique_id = parts[0]
+                    try:
+                        pair_number = int(parts[1])
+                    except:
+                        unique_id = header_content
+                else:
+                    unique_id = header_content
+                
+                if current_metadata and current_metadata.structure_template:
+                    header = reconstruct_header_from_structure(
+                        current_metadata.structure_template,
+                        unique_id,
+                        current_metadata.sequencer_type,
+                        pair_number
+                    )
+                else:
+                    header = f"@{unique_id}"
+                
+                plus_idx = chunk_binary.find(b'\n+\n', header_end)
+                if plus_idx == -1: break
+                
+                bases_data = chunk_binary[header_end:plus_idx].strip()
+                bases = bases_data.decode('ascii', errors='ignore')
+                
+                qual_start = plus_idx + 3
+                qual_data = chunk_binary[qual_start : qual_start + len(bases_data)]
+                quality_string = qual_data.decode('ascii', errors='ignore')
+                
+                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
+                sequence_count += 1
+                cursor = qual_start + len(bases_data)
+
+        elif mode == 3:
+            # Find all markers
+            marker_positions = [i for i, b in enumerate(chunk_binary) if b == 255]
+            
+            for idx, marker_pos in enumerate(marker_positions):
+                # Binary sequence
+                seq_start = marker_pos + 1 # skip 255 marker
+                
+                # Sequence ends at the next marker
+                if idx < len(marker_positions) - 1:
+                    seq_end = marker_positions[idx+1]
+                else:
+                    seq_end = len(chunk_binary)
+                
+                seq_data = chunk_binary[seq_start:seq_end].rstrip(b'\r\n')
+                
+                # Check if we need to switch metadata blocks
+                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                    next_metadata = metadata_blocks[current_metadata_idx + 1]
+                    if sequence_count >= next_metadata.start_index:
+                        current_metadata = next_metadata
+                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                        current_metadata_idx += 1
+                
+                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                bases_array = reverse_map[seq_array]
+                bases = bases_array.tobytes().decode('ascii')
+                
+                # make header from structure template prefix only
+                if current_metadata and current_metadata.structure_template:
+                    # take only the constant prefix before first {REPEATING_X}
+                    header_prefix = find_structure_prefix(current_metadata.structure_template)
+                    header = f"@{header_prefix}" if header_prefix else "@seq"
+                elif sra_accession:
+                    header = f"@{sra_accession}"
+                else:
+                    header = "@seq"
+                
+                # Reconstruct quality
+                if current_inverse_table is not None:
+                    quality_scores = reverse_scaling_to_quality(
+                        seq_array, subtract_table,
+                        current_inverse_table, max_phred=phred_alphabet_max
+                    )
+                    quality_string = bytes((quality_scores + phred_offset).astype(np.uint8)).decode('ascii')
+                else:
+                    quality_string = 'I' * len(bases)
+                
+                output_buffer.append(f"{header}\n".encode('ascii'))
+                output_buffer.append(bases.encode('ascii'))
+                output_buffer.append(b"\n+\n")
+                output_buffer.append(quality_string.encode('ascii'))
+                output_buffer.append(b"\n")
+                sequence_count += 1
 
         # Mode 2: Headers compressed, bases as binary
         else:
-            while pos < len(chunk_binary):
-                if chunk_binary[pos:pos+1] != b'<':
-                    pos += 1
-                    continue
-
-                line_start = chunk_binary.rfind(b'\n@', max(0, pos - 500), pos)
+            sequences_in_chunk = 0
+            
+            # Find all 255 markers in this chunk first
+            marker_positions = []
+            for i in range(len(chunk_binary)):
+                if chunk_binary[i] == 255:
+                    marker_positions.append(i)
+            
+            for marker_idx, marker_pos in enumerate(marker_positions):
+                # Find the header before this marker
+                line_start = chunk_binary.rfind(b'\n@', max(0, marker_pos - 500), marker_pos)
                 
                 if line_start == -1:
-                    # Check if file starts with @
+                    # Check if file/chunk starts with @
                     if chunk_binary[:1] == b'@':
                         line_start = -1  # Will become 0 after +1
-                    else:
-                        # No header found, use default
-                        pos += 1
-                        seq_end = chunk_binary.find(b'\n', pos)
-                        if seq_end == -1:
-                            seq_end = len(chunk_binary) if pos < len(chunk_binary) else pos
-                        
-                        seq_data = chunk_binary[pos:seq_end]
-                        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-                        bases_array = reverse_map[seq_array]
-                        bases = bases_array.tobytes().decode('ascii')
-                        
-                        header = f"@{sra_accession}" if sra_accession else "@seq"
-                        
-                        if current_inverse_table is not None:
-                            quality_scores = reverse_scaling_to_quality(
-                                seq_array, subtract_table,
-                                current_inverse_table, max_phred=phred_alphabet_max
-                            )
-                            quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-                        else:
-                            quality_string = 'I' * len(bases)
-                        
-                        output_buffer.append(header.encode('ascii'))
-                        output_buffer.append(b'\n')
-                        output_buffer.append(bases.encode('ascii'))
-                        output_buffer.append(b'\n+\n')
-                        output_buffer.append(quality_string.encode('ascii'))
-                        output_buffer.append(b'\n')
-                        sequence_count += 1
-                        pos = seq_end + 1
+                    else: # Skip if no header found
                         continue
                 
                 header_start = line_start + 2  # Skip '\n@'
                 if line_start == -1:
                     header_start = 1  # Skip just '@' at start of file
                 
-                # Find the end of the header line (the \n before <)
-                header_end = chunk_binary.rfind(b'\n', header_start, pos)
+                # Find the end of the header line (the \n before 255 marker)
+                header_end = chunk_binary.rfind(b'\n', header_start, marker_pos)
                 if header_end == -1 or header_end < header_start:
-                    header_end = pos
+                    header_end = marker_pos
                 
                 header_content = chunk_binary[header_start:header_end].decode('utf-8', errors='ignore').strip()
                 
+                # Parse pair number if present
                 unique_id = None
                 pair_number = 0
                 
-                # Parse pair number if present
-                pair_number = 0
                 if '/' in header_content:
                     parts = header_content.rsplit('/', 1)
                     # Only treat as pair number if the last part is a single digit (1 or 2)
@@ -775,20 +745,41 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                     )
                 else:
                     if sra_accession:
-                        header = f"@{sra_accession}"
+                        header = f"@{sra_accession}.{sequence_count}"
                     else:
-                        header = f"@seq" # Fallback header
+                        header = f"@seq{sequence_count}"
                 
-                pos += 1  # Move past the '<'
+                # New debug: cannot search for \n as an indicator because binary data represents '\n' as 10!!
+                # This was causing premature stopping
+                seq_start = marker_pos + 1  # Start after 255 marker
                 
-                seq_end = chunk_binary.find(b'\n', pos)
-                if seq_end == -1:
-                    if pos < len(chunk_binary):
+                if marker_idx < len(marker_positions) - 1:
+                    # Not the last marker - sequence ends before next marker
+                    next_marker = marker_positions[marker_idx + 1]
+                    # Find the newline before the next marker (which precedes the next header)
+                    seq_end_search = chunk_binary.rfind(b'\n@', seq_start, next_marker)
+                    if seq_end_search != -1:
+                        seq_end = seq_end_search
+                    else:
+                        # No header found, use position right before next marker
+                        seq_end = next_marker
+                else:
+                    # Last marker - sequence goes to end of chunk or next header
+                    next_header = chunk_binary.find(b'\n@', seq_start)
+                    if next_header != -1:
+                        seq_end = next_header
+                    else:
+                        # No next header, use end of chunk
                         seq_end = len(chunk_binary)
-                    else:
-                        break
                 
-                seq_data = chunk_binary[pos:seq_end]
+                seq_data = chunk_binary[seq_start:seq_end]
+                
+                # Remove trailing newline if present
+                if seq_data and seq_data[-1:] == b'\n':
+                    seq_data = seq_data[:-1]
+                
+                if len(seq_data) == 0: # Skip if sequence data is empty
+                    continue
                 
                 # Check for metadata block changes
                 if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
@@ -809,6 +800,8 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                         current_inverse_table, max_phred=phred_alphabet_max
                     )
                     quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                else:
+                    quality_string = 'I' * len(bases)
 
                 output_buffer.append(header.encode('ascii'))
                 output_buffer.append(b'\n')
@@ -817,7 +810,8 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 output_buffer.append(quality_string.encode('ascii'))
                 output_buffer.append(b'\n')
                 sequence_count += 1
-                pos = seq_end + 1
+                sequences_in_chunk += 1
+            
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
         return (chunk_id, b''.join(output_buffer), sequence_count - start_seq_idx)
