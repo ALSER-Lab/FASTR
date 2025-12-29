@@ -1,4 +1,5 @@
 import os
+import tempfile
 import numpy as np
 import time
 import argparse
@@ -8,6 +9,10 @@ from dataclasses import dataclass
 from multiprocessing import Pool
 from functools import partial
 import mmap
+import cProfile
+import pstats
+from io import StringIO
+from numba import njit
 
 @dataclass
 class MetadataBlock:
@@ -450,62 +455,68 @@ def reverse_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
     reverse_map[gray_T:255] = ord('T') # Never reaches 254 (reserved for indicator of sequence start)
     return reverse_map
 
-def reverse_scaling_to_quality(binary_values: np.ndarray,
-                                       subtract_table: np.ndarray,
-                                       inverse_table: np.ndarray,
-                                       max_phred: int) -> np.ndarray:
-    """
-    Reverse the scaled quality values from the 63-per-base scheme.
-    Returns reconstructed quality scores (0..max_phred).
-    """
+@njit
+def reverse_scaling_to_quality(binary_values, subtract_table, inverse_table, max_phred):
     y = binary_values - subtract_table[binary_values]
-    y = np.clip(y, 0, 63)
     
-    # Single inverse lookup
-    reconstructed_q = inverse_table[y]
-    return np.clip(reconstructed_q, 0, max_phred)
+    # Clip between 0 and 63
+    y_clipped = np.empty_like(y)
+    for i in range(y.shape[0]):
+        val = y[i]
+        if val < 0:
+            val = 0
+        elif val > 63:
+            val = 63
+        y_clipped[i] = val
+    
+    # Map through inverse table
+    result = np.empty_like(y_clipped)
+    for i in range(y_clipped.shape[0]):
+        val = inverse_table[y_clipped[i]]
+        if val < 0:
+            val = 0
+        elif val > max_phred:
+            val = max_phred
+        result[i] = val
+    
+    return result
 
-def build_inverse_quality_table(formula_func, max_phred, max_range=63):
-    """Function designed to build the inverse table separately in order to not be looped within reverse_scaling_to_quality"""
-    q_possible = np.arange(max_phred + 1, dtype=np.float32)
+@njit
+def build_inverse_quality_table(scaled_int_for_q, q_possible, max_range):
+    inverse_table = np.full(max_range + 1, -1, dtype=np.int32)
     
-    # Apply forward formula to get scaled values
-    scaled_for_q = formula_func(q_possible).astype(np.float32)
-    scaled_for_q = np.nan_to_num(scaled_for_q, nan=0.0, posinf=max_range, neginf=0.0)
-    scaled_for_q = np.clip(scaled_for_q, 0, max_range) # Clamp
-    scaled_int_for_q = np.round(scaled_for_q).astype(int)  # Round to uint8
-    inverse_table = np.full(max_range + 1, -1, dtype=int)
-    
-    # For each quality score, store it at its corresponding scaled position
-    for q, s in zip(q_possible, scaled_int_for_q):
+    for i in range(q_possible.shape[0]):
+        s = scaled_int_for_q[i]
         if 0 <= s <= max_range:
-            inverse_table[s] = int(q)
+            inverse_table[s] = int(q_possible[i])
     
-    valid_indices = np.where(inverse_table != -1)[0] # Fill gaps in inverse table 
+    # Fill gaps
+    valid_indices = []
+    for i in range(max_range + 1):
+        if inverse_table[i] != -1:
+            valid_indices.append(i)
     
     if len(valid_indices) > 0:
         # Fill beginning
-        if valid_indices[0] > 0:
-            inverse_table[:valid_indices[0]] = inverse_table[valid_indices[0]]
+        for i in range(valid_indices[0]):
+            inverse_table[i] = inverse_table[valid_indices[0]]
         
-        # Fill gaps between valid values
+        # Fill gaps
         for i in range(len(valid_indices) - 1):
             start_idx = valid_indices[i]
             end_idx = valid_indices[i + 1]
-            if end_idx - start_idx > 1:
-                start_val = inverse_table[start_idx]
-                end_val = inverse_table[end_idx]
-                gap_size = end_idx - start_idx
-                for j in range(1, gap_size):
-                    interpolated = start_val + (end_val - start_val) * j / gap_size
-                    inverse_table[start_idx + j] = int(np.round(interpolated))
+            start_val = inverse_table[start_idx]
+            end_val = inverse_table[end_idx]
+            gap = end_idx - start_idx
+            for j in range(1, gap):
+                inverse_table[start_idx + j] = int(round(start_val + (end_val - start_val) * j / gap))
         
         # Fill end
-        if valid_indices[-1] < max_range:
-            inverse_table[valid_indices[-1] + 1:] = inverse_table[valid_indices[-1]]
+        for i in range(valid_indices[-1] + 1, max_range + 1):
+            inverse_table[i] = inverse_table[valid_indices[-1]]
     else:
-        # If no valid mappings found, use default quality of 0
-        inverse_table[:] = 0
+        for i in range(max_range + 1):
+            inverse_table[i] = 0
     
     return inverse_table
 
@@ -531,12 +542,21 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
         # Determine which metadata block to use for this chunk
         current_metadata_idx = 0
         if metadata_blocks:
-            for i, mb in enumerate(metadata_blocks):
-                if mb.end_index == -1 or sequence_count <= mb.end_index:
-                    current_metadata_idx = i
-                    break
-            current_metadata = metadata_blocks[current_metadata_idx]
-            current_inverse_table = inverse_tables[current_metadata_idx] if inverse_tables else None
+            # Initialize with the first metadata block
+            current_metadata = metadata_blocks[0]
+            current_inverse_table = None
+            
+            for mb in metadata_blocks:
+                formula_func = build_formula_func(mb.scaling_equation)
+                # Prepare input arrays for inverse table
+                q_possible = np.arange(phred_alphabet_max + 1, dtype=np.float32)
+                scaled_int_for_q = formula_func(q_possible).astype(np.int32)
+                inverse_table = build_inverse_quality_table(scaled_int_for_q, q_possible.astype(np.int32), 63)
+                inverse_tables.append(inverse_table)
+            
+            # Set the inverse table for the current metadata
+            if inverse_tables:
+                current_inverse_table = inverse_tables[0]
         else:
             current_metadata = None
             current_inverse_table = None
@@ -818,7 +838,10 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
             
         
         print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
-        return (chunk_id, b''.join(output_buffer), sequence_count - start_seq_idx)
+        temp = tempfile.NamedTemporaryFile(delete=False, mode='wb')
+        temp.write(b''.join(output_buffer))
+        temp.close()
+        return temp.name, sequence_count - start_seq_idx
     
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")
@@ -852,7 +875,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     with open(input_path, 'rb') as f:
         data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     file_size = len(data)
-    print(f"File size: {file_size:,} bytes ({file_size / (1024**2):.2f} MB)")
+    print(f"File size: {file_size:,} bytes ({file_size / (1024**8):.2f} MB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
     metadata_blocks, data_start_byte, sra_accession, phred_from_metadata = parse_metadata_header(data, mode)
@@ -882,14 +905,20 @@ def reconstruct_fastq(input_path: str, output_path: str,
     
     reverse_map = reverse_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
     subtract_table = create_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
-    inverse_tables = []
     
     inverse_tables = []
     if mode in [1, 2, 3]:
         if metadata_blocks:
             for mb in metadata_blocks:
                 formula_func = build_formula_func(mb.scaling_equation)
-                inverse_table = build_inverse_quality_table(formula_func, phred_alphabet_max)
+                # FIX: Add the missing arguments
+                q_possible = np.arange(phred_alphabet_max + 1, dtype=np.float32)
+                scaled_int_for_q = formula_func(q_possible).astype(np.int32)
+                inverse_table = build_inverse_quality_table(
+                    scaled_int_for_q, 
+                    q_possible.astype(np.int32), 
+                    63  # max_range should be 63 as used elsewhere
+                )
                 inverse_tables.append(inverse_table)
         
         if not inverse_tables and mode == 1:
@@ -977,13 +1006,19 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 headers_list=headers_list 
             )
             
-            for chunk_id, fastq_text, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
-                outfile.write(fastq_text)
-                
+            temp_files = []
+            for temp_path, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
+                temp_files.append(temp_path)
                 total_sequences += count
-                
                 if total_sequences % 100000 == 0:
                     print(f"Reconstructed {total_sequences:,} sequences...")
+        
+        # Merge temp files into the final output and clean up
+        for temp_path in temp_files:
+            with open(temp_path, 'rb') as tf:
+                outfile.write(tf.read())
+            os.remove(temp_path)
+
     
     print(f"\nTotal sequences reconstructed: {total_sequences:,}")
     print(f"Output saved to: {output_path}")
@@ -1006,6 +1041,8 @@ def main():
                         help="Phred quality offset for output (default: 33)")
     parser.add_argument("--phred_alphabet", type=str, default=None,
                         help="Phred alphabet override (phred42/phred63/phred94), defaults to metadata value")
+    parser.add_argument("--profile", action="store_true",
+                        help="Enable cProfile profiling")
     
     # Base mapping
     parser.add_argument("--gray_N", type=int, default=0)
@@ -1032,6 +1069,10 @@ def main():
             phred_alphabet_max = 93
     
     start_time = time.perf_counter()
+
+    if args.profile:
+        profiler = cProfile.Profile()
+        profiler.enable()
     
     reconstruct_fastq(
         args.input_path, args.output_path,
@@ -1045,6 +1086,12 @@ def main():
         mode=args.mode,
         mode3_headers_file=args.headers_file
     )
+    if args.profile:
+        profiler.disable()
+        s = StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+        ps.print_stats()
+        print(s.getvalue())
     
     end_time = time.perf_counter()
     print(f"\nReconstruction completed in {end_time - start_time:.4f} seconds")
