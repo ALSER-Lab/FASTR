@@ -419,7 +419,7 @@ def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray
 
 def build_formula_func(formula: str):
     """Return a function f(x) that applies the custom formula."""
-    cleaned = re.sub(r'^\s*f\s*\(\s*x\s*\)\s*=\s*', '', formula.strip()).replace('^', '**') # Normalize formula string once
+    cleaned = re.sub(r'^\s*f\s*\(\s*x\s*\)\s*=\s*', '', formula.strip()).replace('^', '**')
 
     safe_dict = {
         'ln': np.log, 'log': np.log, 'log10': np.log10, 'exp': np.exp,
@@ -429,9 +429,12 @@ def build_formula_func(formula: str):
 
     def formula_func(x):
         local = dict(safe_dict)
-        local['x'] = x
+        local['x'] = x.astype(np.float32) if isinstance(x, np.ndarray) else np.float32(x)
         with np.errstate(divide='ignore', invalid='ignore'):
-            return eval(cleaned, local)
+            result = eval(cleaned, local)
+            if isinstance(result, np.ndarray):
+                result = np.nan_to_num(result, nan=1.0, posinf=63.0, neginf=1.0)
+            return result
 
     return formula_func
 
@@ -534,7 +537,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
     """
     try:
         chunk_id, chunk_binary, start_seq_idx = chunk_data
-        print(f"Worker processing chunk {chunk_id} starting at sequence {start_seq_idx}")
+        # print(f"Worker processing chunk {chunk_id} starting at sequence {start_seq_idx}")
         
         output_buffer = []
         sequence_count = start_seq_idx
@@ -837,7 +840,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 sequences_in_chunk += 1
             
         
-        print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
+        # print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
         temp = tempfile.NamedTemporaryFile(delete=False, mode='wb')
         temp.write(b''.join(output_buffer))
         temp.close()
@@ -853,7 +856,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
 def reconstruct_fastq(input_path: str, output_path: str, 
                      gray_N: int = 0, gray_A: int = 3, gray_G: int = 66,
                      gray_C: int = 129, gray_T: int = 192, phred_alphabet_max: int = None,
-                     phred_offset: int = 33, chunk_size_mb: int = 32, num_workers: int = 4,
+                     phred_offset: int = 33, chunk_size_mb: int = 8, num_workers: int = 4,
                      mode: int = 2, mode3_headers_file: str = None):
     """
     Reconstruct FASTQ file from FASTR using parallel processing.
@@ -911,7 +914,6 @@ def reconstruct_fastq(input_path: str, output_path: str,
         if metadata_blocks:
             for mb in metadata_blocks:
                 formula_func = build_formula_func(mb.scaling_equation)
-                # FIX: Add the missing arguments
                 q_possible = np.arange(phred_alphabet_max + 1, dtype=np.float32)
                 scaled_int_for_q = formula_func(q_possible).astype(np.int32)
                 inverse_table = build_inverse_quality_table(
@@ -1052,8 +1054,8 @@ def main():
     parser.add_argument("--gray_T", type=int, default=192)
     
     # Multiprocessing
-    parser.add_argument("--chunk_size_mb", type=int, default=32,
-                        help="Chunk size in MB for parallel processing (default: 32)")
+    parser.add_argument("--chunk_size_mb", type=int, default=8,
+                        help="Chunk size in MB for parallel processing (default: 8)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of parallel workers (default: 4)")
     
