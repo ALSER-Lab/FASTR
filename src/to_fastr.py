@@ -19,7 +19,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False,
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
-                          paired_end_mode='same_file', chunk_size_mb=32, num_workers=4, adaptive_sample_size=10,
+                          paired_end_mode='same_file', chunk_size_mb=8, num_workers=4, adaptive_sample_size=10,
                           mode=None, mode3_input_headers=None):
     """
     Main processing function using streaming architecture to handle files of any size.
@@ -449,8 +449,8 @@ def main():
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
     perf_group.add_argument("--workers", type=int, default=1, metavar="INT",
                             help="Number of parallel workers (use 4+ for large files >5GB) [1]")
-    perf_group.add_argument("--chunk_mb", type=int, default=32, metavar="INT",
-                            help="Chunk size in MB for parallel processing [32]")
+    perf_group.add_argument("--chunk_mb", type=int, default=8, metavar="INT",
+                            help="Chunk size in MB for parallel processing [8]")
     perf_group.add_argument("--profile", type=int, default=0, metavar="INT",
                             help="Enable profiling (0/1) [0]")
 

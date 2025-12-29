@@ -9,7 +9,7 @@ def get_scaling_equation(scaling_method: str, custom_formula=None, phred_alphabe
     elif scaling_method == 'none':
         return "x"
     elif scaling_method == 'log':
-        return f"1 + 62*(ln(x)/ln({phred_alphabet_max + 1}))"
+        return f"1 + 62*(ln(x+1)/ln({phred_alphabet_max + 1}))"
     elif scaling_method == 'log_reverse':
         return f"62-62*(ln({phred_alphabet_max + 1}-x)/ln({phred_alphabet_max + 1}))"
     elif scaling_method == 'linear':
@@ -112,14 +112,17 @@ def apply_quality_to_bases(base_values, quality_scores, base_map, scaling_method
 
     elif scaling_method == 'log':
         # Logarithmic scaling - makes larger quality scores closer in difference
-        # f(x) = 1 + 62 * (log(x) / log(phred_alphabet_max+1))
+        # f(x) = 1 + 62 * (log(x+1) / log(phred_alphabet_max+1))
         with np.errstate(divide='ignore', invalid='ignore'):
+            # Add 1 to avoid log(0), then subtract 1 from result to maintain range
+            x = np.arange(0, phred_alphabet_max + 1, dtype=np.float32)
+            # Use x+1 in log to avoid log(0)
             LOG_DICT = np.clip(
-                1 + 62 * (np.log(np.arange(0, phred_alphabet_max + 1, dtype=np.float32)) / 
-                         np.log(phred_alphabet_max+1)), 
+                1 + 62 * (np.log(x + 1) / np.log(phred_alphabet_max + 1)), 
                 1, 63
             ).astype(np.uint8)
             scale_factors = LOG_DICT[quality_scores]
+
 
     elif scaling_method == 'log_reverse':
         # Reverse logarithmic scaling - high quality -> small input to log

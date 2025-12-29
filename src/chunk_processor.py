@@ -20,7 +20,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
     """
     try:
         chunk_id, buffer, start_index = chunk_data
-        print(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")
+        # print(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")
         
         # Parse the records from buffer
         records, _, metadata, structure, delimiter, count = parse_fastq_records_from_buffer(
@@ -32,7 +32,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
             adaptive_sample_size=adaptive_sample_size
         )
         
-        print(f"Worker parsed {count} records from chunk {chunk_id}")
+        # print(f"Worker parsed {count} records from chunk {chunk_id}")
         
         # Process records and write to in-memory buffer
         output_buffer = io.BytesIO()
@@ -47,7 +47,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
                 headers_buffer=headers_buffer
             )
         
-        print(f"Worker completed chunk {chunk_id}")
+       #  print(f"Worker completed chunk {chunk_id}")
         headers_data = headers_buffer.getvalue() if headers_buffer else None 
         return (chunk_id, output_buffer.getvalue(), metadata, structure, delimiter, count, headers_data)
         
