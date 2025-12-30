@@ -531,13 +531,39 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subtract_table, 
                                        base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
-                                       mode, headers_list):
+                                       mode, headers_file_path=None):
     """
     Worker function that processes a single chunk of binary sequence data in parallel.
+    For mode 3, loads headers from file instead of receiving them via pickle.
     """
     try:
         chunk_id, abs_start, abs_end, start_seq_idx = chunk_data
-        # print(f"Worker processing chunk {chunk_id} starting at sequence {start_seq_idx}")
+        
+        # For mode 3, memory-map headers file in worker (avoiding pickle overhead)
+        headers_mmap = None
+        headers_offsets = None
+        if mode == 3 and headers_file_path:
+            with open(headers_file_path, 'rb') as hf:
+                headers_mmap = mmap.mmap(hf.fileno(), 0, access=mmap.ACCESS_READ)
+                # Build line offset index for this chunk's range only
+                # This is MUCH faster than splitting the entire file!!
+                headers_offsets = []
+                pos = 0
+                line_idx = 0
+                # We only need offsets for sequences in this chunk
+                target_start = start_seq_idx
+                target_end = start_seq_idx + 200000  # Estimate, will stop when done
+                
+                while pos < len(headers_mmap) and line_idx < target_end:
+                    if line_idx >= target_start:
+                        headers_offsets.append(pos)
+                    next_newline = headers_mmap.find(b'\n', pos)
+                    if next_newline == -1:
+                        if line_idx >= target_start:
+                            headers_offsets.append(pos)
+                        break
+                    pos = next_newline + 1
+                    line_idx += 1
         
         # Open shared mmap in worker
         with open(mmap_path, 'rb') as f:
@@ -550,10 +576,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
         # Determine which metadata block to use for this chunk
         current_metadata_idx = 0
         if metadata_blocks:
-            # Initialize with the first metadata block
             current_metadata = metadata_blocks[0]
-            
-            # Set the inverse table for the current metadata
             if inverse_tables:
                 current_inverse_table = inverse_tables[0]
             else:
@@ -653,14 +676,14 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 sequence_count += 1
                 cursor = qual_start + len(bases_data)
 
-        elif mode == 3:
+        if mode == 3:
             # Find all markers
             chunk_array = np.frombuffer(chunk_binary, dtype=np.uint8)
             marker_positions = np.where(chunk_array == 255)[0].tolist()
             
             for idx, marker_pos in enumerate(marker_positions):
                 # Binary sequence
-                seq_start = marker_pos + 1 # skip 255 marker
+                seq_start = marker_pos + 1 # Skip 255 marker
                 
                 # Sequence ends at the next marker
                 if idx < len(marker_positions) - 1:
@@ -682,12 +705,26 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 bases_array = reverse_map[seq_array]
                 bases = bases_array.tobytes().decode('ascii')
                 
-                # Get header from headers_list if available
-                if headers_list and sequence_count < len(headers_list):
-                    header = headers_list[sequence_count].rstrip(b'\r\n').decode('utf-8', errors='ignore')
-                    if not header.startswith('@'):
-                        header = f"@{header}"
+                if headers_mmap and headers_offsets: # Get using mmap and offset index
+                    offset_idx = sequence_count - start_seq_idx
+                    if offset_idx < len(headers_offsets):
+                        start_offset = headers_offsets[offset_idx]
+                        if offset_idx + 1 < len(headers_offsets):
+                            end_offset = headers_offsets[offset_idx + 1] - 1  # -1 for newline
+                        else:
+                            # Last header in our range
+                            end_offset = headers_mmap.find(b'\n', start_offset)
+                            if end_offset == -1:
+                                end_offset = len(headers_mmap)
+                        
+                        header = headers_mmap[start_offset:end_offset].decode('utf-8', errors='ignore')
+                        if not header.startswith('@'):
+                            header = '@' + header
+                    else:
+                        # Fallback
+                        header = f"@seq{sequence_count}"
                 else:
+                    # Fallback
                     if current_metadata and current_metadata.structure_template: 
                         header_prefix = find_structure_prefix(current_metadata.structure_template)
                         header = f"@{header_prefix}.{sequence_count}" if header_prefix else f"@seq{sequence_count}"
@@ -859,21 +896,24 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"Reading FASTR: {input_path}")
     print(f"Reconstruction mode: {mode}")
     
-    # Load headers file for mode 3
-    headers_list = None
+    # For mode 3, validate headers file exists but don't load it..
+    # Workers will load it themselves to avoid pickle overhead
     if mode == 3 and mode3_headers_file:
-        print(f"Loading headers from: {mode3_headers_file}")
+        if not os.path.exists(mode3_headers_file):
+            raise FileNotFoundError(f"Headers file not found: {mode3_headers_file}")
+        print(f"Headers file: {mode3_headers_file} (will be loaded by workers)")
+        # Quick check of header count
         with open(mode3_headers_file, 'rb') as hf:
-            headers_list = hf.readlines()
-        print(f"Loaded {len(headers_list):,} headers")
+            header_count = sum(1 for _ in hf)
+        print(f"Headers file contains {header_count:,} headers")
     elif mode == 3 and not mode3_headers_file:
         print("WARNING: Mode 3 requires --headers_file argument")
-        print("Proceeding without headers - will use fallback header generation")
+        print("Proceeding without headers - will use fallback header generation (currently: '@seq')")
     
     with open(input_path, 'rb') as f:
         data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     file_size = len(data)
-    print(f"File size: {file_size:,} bytes ({file_size / (1024**8):.2f} MB)")
+    print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
     metadata_blocks, data_start_byte, sra_accession, phred_from_metadata = parse_metadata_header(data, mode)
@@ -1002,7 +1042,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 phred_offset=phred_offset,
                 sra_accession=sra_accession,
                 mode=mode,
-                headers_list=headers_list 
+                headers_file_path=mode3_headers_file  # Pass file path instead of list
             )
             
             temp_files = []
