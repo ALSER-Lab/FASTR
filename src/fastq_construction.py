@@ -528,7 +528,7 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
     return bytes((quality_scores + phred_offset).astype(np.uint8))
 
 
-def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table, 
+def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subtract_table, 
                                        base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
                                        mode, headers_list):
@@ -536,10 +536,15 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
     Worker function that processes a single chunk of binary sequence data in parallel.
     """
     try:
-        chunk_id, chunk_binary, start_seq_idx = chunk_data
+        chunk_id, abs_start, abs_end, start_seq_idx = chunk_data
         # print(f"Worker processing chunk {chunk_id} starting at sequence {start_seq_idx}")
         
-        output_buffer = []
+        # Open shared mmap in worker
+        with open(mmap_path, 'rb') as f:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            chunk_binary = data[abs_start:abs_end]
+        
+        temp = tempfile.NamedTemporaryFile(delete=False, mode='wb', buffering=8*1024*1024)
         sequence_count = start_seq_idx
         
         # Determine which metadata block to use for this chunk
@@ -547,19 +552,12 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
         if metadata_blocks:
             # Initialize with the first metadata block
             current_metadata = metadata_blocks[0]
-            current_inverse_table = None
-            
-            for mb in metadata_blocks:
-                formula_func = build_formula_func(mb.scaling_equation)
-                # Prepare input arrays for inverse table
-                q_possible = np.arange(phred_alphabet_max + 1, dtype=np.float32)
-                scaled_int_for_q = formula_func(q_possible).astype(np.int32)
-                inverse_table = build_inverse_quality_table(scaled_int_for_q, q_possible.astype(np.int32), 63)
-                inverse_tables.append(inverse_table)
             
             # Set the inverse table for the current metadata
             if inverse_tables:
                 current_inverse_table = inverse_tables[0]
+            else:
+                current_inverse_table = None
         else:
             current_metadata = None
             current_inverse_table = None
@@ -602,7 +600,7 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                     else:
                         quality_string = 'I' * len(bases) # If you see all I's (even when there shouldn't be) it means we had to fallback
                     
-                    output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
+                    temp.write(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
                     sequence_count += 1
                     cursor = seq_end
                 else:
@@ -651,13 +649,14 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 qual_data = chunk_binary[qual_start : qual_start + len(bases_data)]
                 quality_string = qual_data.decode('ascii', errors='ignore')
                 
-                output_buffer.append(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
+                temp.write(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
                 sequence_count += 1
                 cursor = qual_start + len(bases_data)
 
         elif mode == 3:
             # Find all markers
-            marker_positions = [i for i, b in enumerate(chunk_binary) if b == 255]
+            chunk_array = np.frombuffer(chunk_binary, dtype=np.uint8)
+            marker_positions = np.where(chunk_array == 255)[0].tolist()
             
             for idx, marker_pos in enumerate(marker_positions):
                 # Binary sequence
@@ -707,11 +706,11 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 else:
                     quality_string = 'I' * len(bases)
                 
-                output_buffer.append(f"{header}\n".encode('ascii'))
-                output_buffer.append(bases.encode('ascii'))
-                output_buffer.append(b"\n+\n")
-                output_buffer.append(quality_string.encode('ascii'))
-                output_buffer.append(b"\n")
+                temp.write(f"{header}\n".encode('ascii'))
+                temp.write(bases.encode('ascii'))
+                temp.write(b"\n+\n")
+                temp.write(quality_string.encode('ascii'))
+                temp.write(b"\n")
                 sequence_count += 1
 
         # Mode 2: Headers compressed, bases as binary
@@ -719,10 +718,8 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
             sequences_in_chunk = 0
             
             # Find all 255 markers in this chunk first
-            marker_positions = []
-            for i in range(len(chunk_binary)):
-                if chunk_binary[i] == 255:
-                    marker_positions.append(i)
+            chunk_array = np.frombuffer(chunk_binary, dtype=np.uint8)
+            marker_positions = np.where(chunk_array == 255)[0].tolist()
             
             for marker_idx, marker_pos in enumerate(marker_positions):
                 # Find the header before this marker
@@ -830,19 +827,17 @@ def process_chunk_worker_reconstruction(chunk_data, reverse_map, subtract_table,
                 else:
                     quality_string = 'I' * len(bases)
 
-                output_buffer.append(header.encode('ascii'))
-                output_buffer.append(b'\n')
-                output_buffer.append(bases.encode('ascii'))
-                output_buffer.append(b'\n+\n')
-                output_buffer.append(quality_string.encode('ascii'))
-                output_buffer.append(b'\n')
+                temp.write(header.encode('ascii'))
+                temp.write(b'\n')
+                temp.write(bases.encode('ascii'))
+                temp.write(b'\n+\n')
+                temp.write(quality_string.encode('ascii'))
+                temp.write(b'\n')
                 sequence_count += 1
                 sequences_in_chunk += 1
             
         
         # print(f"Worker completed chunk {chunk_id}, processed {sequence_count - start_seq_idx} sequences")
-        temp = tempfile.NamedTemporaryFile(delete=False, mode='wb')
-        temp.write(b''.join(output_buffer))
         temp.close()
         return temp.name, sequence_count - start_seq_idx
     
@@ -939,54 +934,55 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
     def chunk_generator():
-        buffer = data[data_start_byte:]
+        buffer_start = data_start_byte
+        buffer_len = len(data) - data_start_byte
         chunk_id = 0
         start_seq_idx = 0
         pos = 0
         
-        while pos < len(buffer):
-            chunk_end = min(pos + chunk_size_bytes, len(buffer))
+        while pos < buffer_len:
+            chunk_end = min(pos + chunk_size_bytes, buffer_len)
             
             # Find boundary based on mode
             if mode in [2, 3]:
                 # Mode 2/3: Split on 255 markers
                 search_start = max(pos, chunk_end - 1000)
-                last_marker = buffer.rfind(b'\xff', search_start, chunk_end)
+                last_marker = data[buffer_start + search_start:buffer_start + chunk_end].rfind(b'\xff')
                 
-                if last_marker != -1 and last_marker > pos:
-                    seq_end = buffer.find(b'\n', last_marker)
-                    if seq_end != -1 and seq_end < len(buffer):
-                        chunk_end = seq_end + 1
+                if last_marker != -1 and (search_start + last_marker) > pos:
+                    seq_end_offset = data[buffer_start + search_start + last_marker:buffer_start + chunk_end].find(b'\n')
+                    if seq_end_offset != -1:
+                        chunk_end = search_start + last_marker + seq_end_offset + 1
             else:
                 # Mode 0 and 1: Split on '@' headers
                 search_start = max(pos, chunk_end - 1000)
-                last_header = buffer.rfind(b'\n@', search_start, chunk_end)
+                last_header = data[buffer_start + search_start:buffer_start + chunk_end].rfind(b'\n@')
                 
-                if last_header != -1 and last_header > pos:
-                    chunk_end = last_header + 1
+                if last_header != -1 and (search_start + last_header) > pos:
+                    chunk_end = search_start + last_header + 1
             
             overlap_start = max(0, pos - 500)
-            chunk_binary = buffer[overlap_start:chunk_end]
+            abs_start = buffer_start + overlap_start
+            abs_end = buffer_start + chunk_end
             
-            if chunk_binary:
+            if abs_end > abs_start:
                 actual_start_in_chunk = pos - overlap_start
+                chunk_view = data[abs_start:abs_end]
                 if mode in [2, 3]:
                     # Count 255 markers for mode 2/3
-                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'\xff')
+                    estimated_seqs = chunk_view[actual_start_in_chunk:].count(b'\xff')
                 else:
-                    estimated_seqs = chunk_binary[actual_start_in_chunk:].count(b'\n@')
+                    estimated_seqs = chunk_view[actual_start_in_chunk:].count(b'\n@')
                 
-                yield (chunk_id, chunk_binary, start_seq_idx)
+                yield (chunk_id, abs_start, abs_end, start_seq_idx)
                 
                 start_seq_idx += estimated_seqs
                 chunk_id += 1
-                
                 if chunk_id % 10 == 0:
                     print(f"Read {chunk_id} chunks...")
             
             pos = chunk_end
-            
-            if pos >= len(buffer):
+            if pos >= buffer_len:
                 break
     
     print("Reconstructing FASTQ with parallel processing...")
@@ -994,11 +990,12 @@ def reconstruct_fastq(input_path: str, output_path: str,
     
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         with Pool(processes=num_workers) as pool:
-            worker_func = partial(
+            worker_func = partial( # Redid argument order as it was causing some np arrays to be pickled instead of metadata objects
                 process_chunk_worker_reconstruction,
-                reverse_map=reverse_map,
-                subtract_table=subtract_table,
-                base_ranges=base_ranges,
+                mmap_path=input_path,        
+                reverse_map=reverse_map,       
+                subtract_table=subtract_table,  
+                base_ranges=base_ranges,     
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
                 phred_alphabet_max=phred_alphabet_max,
@@ -1092,7 +1089,7 @@ def main():
         profiler.disable()
         s = StringIO()
         ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-        ps.print_stats()
+        ps.print_stats(20) # Limit output so it doesnt take up all space in terminal
         print(s.getvalue())
     
     end_time = time.perf_counter()
