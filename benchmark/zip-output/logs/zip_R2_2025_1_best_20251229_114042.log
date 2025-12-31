@@ -1,0 +1,30 @@
+=== zip benchmark (single file) ===
+Start: 2025-12-29T11:40:42-05:00
+tool=zip
+run_id=20251229_114042
+input=./fastq_files/D1_S1_L001_R1_001-017.fastq
+mode=best (zip -9)
+tmpdir=/tmp
+out_prefix=/alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best
+logfile=/alina-data1/Ezekiel/benchmark_compression/zip2-output/logs/zip_R2_2025_1_best_20251229_114042.log
+
+zip_out=/alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best.zip
+dec_out=/alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best.dec
+
+
+---- compress ----
+CMD: zip -q -9 -j /alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best.zip ./fastq_files/D1_S1_L001_R1_001-017.fastq
+Start(compress): 2025-12-29T11:40:42-05:00
+End(compress): 2025-12-29T11:41:01-05:00 (rc=0)
+zip_member=D1_S1_L001_R1_001-017.fastq
+
+---- decompress ----
+CMD: bash -c unzip -p -- "$1" "$2" > "$3" unzip_pipe /alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best.zip D1_S1_L001_R1_001-017.fastq /alina-data1/Ezekiel/benchmark_compression/zip2-output/R2_2025_1_best.dec
+Start(decompress): 2025-12-29T11:41:01-05:00
+End(decompress): 2025-12-29T11:41:02-05:00 (rc=0)
+input_matches_decompressed=1
+zip	20251229_114042	1	NA	NA	0	0	18.930000	7.367	3.223605	2.648	0.390000	23.749	3.691	1
+
+Done: 2025-12-29T11:41:02-05:00
+Log saved to: /alina-data1/Ezekiel/benchmark_compression/zip2-output/logs/zip_R2_2025_1_best_20251229_114042.log
+Metrics appended to: /alina-data1/Ezekiel/benchmark_compression/zip2-output/logs/metrics.tsv

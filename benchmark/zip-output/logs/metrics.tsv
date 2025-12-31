@@ -1,0 +1,3 @@
+tool	run_id	threads_requested	thread_flag_compress	thread_flag_decompress	mt_compress	mt_decompress	compression_time_s	compressed_size_mb	compression_ratio	peak_mem_compress_mb	decompression_time_s	decompressed_size_mb	peak_mem_decompress_mb	input_matches_decompressed
+zip	20251229_113641	1	NA	NA	0	0	0.990000	8.743	2.716348	2.684	0.370000	23.749	3.727	1
+zip	20251229_114042	1	NA	NA	0	0	18.930000	7.367	3.223605	2.648	0.390000	23.749	3.691	1
