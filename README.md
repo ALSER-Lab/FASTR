@@ -2,12 +2,9 @@
 
 
 ![FASTR](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)
-<img src="[https://github.com/favicon.ico](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)" width="100">
 
-<img src="[image-url](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)" alt="Alt Text" width="100" height="100">
-[https://raw.githubusercontent.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png](https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/FASTR-Logo.png?token=GHSAT0AAAAAAC4IEXWGYVINCCUHSWFMSSKU2KUTQ6Q)
 <p align="center">
-    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/FASTR-Logo.png?token=GHSAT0AAAAAAC4IEXWGYVINCCUHSWFMSSKU2KUTQ6Q" alt="FASTR" width="100" border="10" /></a>
+    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/FASTR-Logo.png?token=GHSAT0AAAAAAC4IEXWGYVINCCUHSWFMSSKU2KUTQ6Q" alt="FASTR" width="300" border="10" /></a>
 </p>
 
 
