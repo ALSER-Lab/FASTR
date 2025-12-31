@@ -1,0 +1,32 @@
+=== xz benchmark (single file) ===
+Start: 2025-12-29T12:25:26-05:00
+tool=xz
+run_id=20251229_122526
+input=./fastq_files/D1_S1_L001_R1_001-017.fastq
+threads_requested=32
+mode=best (xz -9)
+tmpdir=/tmp
+out_prefix=/alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best
+logfile=/alina-data1/Ezekiel/benchmark_compression/xz2-output/logs/xz_R2_2025_1_best_20251229_122526.log
+XZ_OPT=<unset>
+XZ_DEFAULTS=<unset>
+
+compressed_file=/alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best.xz
+decompressed_file=/alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best.dec
+
+
+---- compress ----
+CMD: bash -c env -u XZ_OPT -u XZ_DEFAULTS xz -z -"$1" -T"$2" -c -- "$3" > "$4" xz_c 9 32 ./fastq_files/D1_S1_L001_R1_001-017.fastq /alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best.xz
+Start(compress): 2025-12-29T12:25:26-05:00
+End(compress): 2025-12-29T12:26:21-05:00 (rc=0)
+
+---- decompress ----
+CMD: bash -c env -u XZ_OPT -u XZ_DEFAULTS xz -d -T"$1" -c -- "$2" > "$3" xz_d 32 /alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best.xz /alina-data1/Ezekiel/benchmark_compression/xz2-output/R2_2025_1_best.dec
+Start(decompress): 2025-12-29T12:26:21-05:00
+End(decompress): 2025-12-29T12:26:21-05:00 (rc=0)
+input_matches_decompressed=1
+xz	20251229_122526	32	-T	-T	1	1	54.910000	6.132	3.873198	269.836	0.570000	23.749	56.051	1
+
+Done: 2025-12-29T12:26:21-05:00
+Log saved to: /alina-data1/Ezekiel/benchmark_compression/xz2-output/logs/xz_R2_2025_1_best_20251229_122526.log
+Metrics appended to: /alina-data1/Ezekiel/benchmark_compression/xz2-output/logs/metrics.tsv
