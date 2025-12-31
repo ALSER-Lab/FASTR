@@ -65,5 +65,5 @@ Each run appends one row to `metrics.tsv`:
 conda create -n fastq_bench -c conda-forge -c bioconda \
   spring gzip bzip2 xz zstd pigz bsc zip unzip samtools picard
 
-conda activate fastqbench
+conda activate fastq_bench
 ```
