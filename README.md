@@ -4,22 +4,20 @@
 </p>
 
 FASTR, an efficient file format designed for lossless storage of sequencing data as scalar (numerical) formats. 
-FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality scores into integer-based or binary representations, making it ideal for machine learning pipelines, and specialized data compression workflows.
+FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality scores into efficient/compact integer-based or binary representations.
+
+## Features
+  * FASTR is at least 2x less in size than FASTQ, and hence better to read, process, transfer.
+  * FASTR can be further compressed using general-purpose compression tools, such as gzip, pigz, ...
+  * Extremely fast (multithreaded) and lossless FASTR-to-FASTQ & FASTQ-to-FASTR conversion.
+  * FASTR supports data from all prominent sequencing technologies (Illumina, ONT, PacBio's HiFi, and PacBio's CLR), single-end and paired-end reads, and SRA formats (https://www.ncbi.nlm.nih.gov/sra).
+  * FASTR supports all widely-used Phred quality scores (Phred42, Phred63, Phred68Solexa, Phred94, Illumina RTA3, Illumina RTA4, and custom mathematical formulas).
+  * Flexible Output: binar (1 uint8 per FASTR value), integer (3 uint8s per FASTR value), with/without header.
+  * FASTR is compatible with minimap2 with no (or <2%) overhead, and with machine learning pipelines (i.e., numerical vectors).
 
 <p align="center">
     <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-fig1.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-fig1.png?token=GHSAT0AAAAAAC4IEXWHEQL5XFVPABXOHOV42KUVEWQ" alt="FASTR logo, CanvaAI-generated" width="700" border="10" /></a>
 </p>
-
-
-## Features
-  * **Quick Modes:** Pre-configured settings for common conversion tasks (header compression, base conversion, etc.).
-  * **Scalar Mapping:** customizable "Grayscale" integer mapping for DNA bases (A, C, T, G, N).
-  * **Quality Score Scaling:** Transform Phred scores using Logarithmic or Custom mathematical formulas.
-  * **Header Compression:** On-the-fly compression for Illumina, PacBio, ONT, and SRA headers.
-  * **Performance:** Multiprocessing support for large files (\>5GB) and profiling tools included.
-  * **Flexible Output:** Binary writing, text bases, or one-hot encoding options.
-  * It supports Illumina, ONT, and PacBio's HiFi and CLR data. It also supports their SRA formats (https://www.ncbi.nlm.nih.gov/sra).
-  * It features advanced handling for paired-end reads, header compression, and custom mathematical scaling for Phred quality scores.
 
 -----
 
