@@ -3,6 +3,8 @@
 
 ![FASTR](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png | width=50)
 <img src="[https://github.com/favicon.ico](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)" width="100">
+
+<img src="[image-url](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)" alt="Alt Text" width="100" height="100">
 ## Overview
 A high-performance bioinformatics tool designed to convert and compress biological sequence data (FASTQ/FASTA) into scalar (numerical) formats. This tool transforms textual genetic data into integer-based or binary representations, making it ideal for machine learning pipelines, deep learning input generation (DNA-to-Image), and specialized data compression workflows.
 
