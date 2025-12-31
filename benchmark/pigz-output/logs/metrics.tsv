@@ -1,0 +1,3 @@
+tool	run_id	threads_requested	thread_flag_compress	thread_flag_decompress	mt_compress	mt_decompress	compression_time_s	compressed_size_mb	compression_ratio	peak_mem_compress_mb	decompression_time_s	decompressed_size_mb	peak_mem_decompress_mb	input_matches_decompressed
+pigz	20251230_105906	32	-p	-p	1	0	0.050000	8.747	2.714927	20.969	0.190000	23.749	3.734	1
+pigz	20251230_110341	32	-p	-p	1	0	0.770000	7.376	3.219817	22.020	0.150000	23.749	3.691	1
