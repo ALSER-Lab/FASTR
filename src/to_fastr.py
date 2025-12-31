@@ -98,7 +98,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             adaptive_structure=None,
             adaptive_delimiter=None,
             adaptive_sample_size=adaptive_sample_size,
-            extract_headers=extract_headers
+            extract_headers=extract_headers,
+            mode=mode
         )
         chunk_id, first_processed_bytes, metadata, structure_template, delimiter, count, first_headers_data = worker_func_first(first_chunk_data)
         
@@ -133,7 +134,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 adaptive_structure=structure_template,
                 adaptive_delimiter=delimiter, 
                 adaptive_sample_size=adaptive_sample_size,
-                extract_headers=extract_headers 
+                extract_headers=extract_headers,
+                mode=mode
             )
             
             # Use imap to process chunks as they're read (streaming)

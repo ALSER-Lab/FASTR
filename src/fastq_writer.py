@@ -8,11 +8,11 @@ from quality_processing import apply_quality_to_bases
 SEQUENCE_START_MARKER = np.uint8(255)
 
 def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.ndarray,
-                               quality_scaling: str, custom_formula: Optional[str],
-                               phred_alphabet_max: int, min_quality: int, keep_bases: bool,
-                               binary: bool, keep_quality: bool,
-                               remove_repeating_header: bool, compress_headers: bool,
-                               BYTE_LOOKUP: np.ndarray, headers_buffer=None):
+                              quality_scaling: str, custom_formula: Optional[str],
+                              phred_alphabet_max: int, min_quality: int, keep_bases: bool,
+                              binary: bool, keep_quality: bool,
+                              remove_repeating_header: bool, compress_headers: bool,
+                              BYTE_LOOKUP: np.ndarray, headers_buffer=None, mode: int = None):
     """
     Process quality scaling on records and write to file.
     Applies quality-based transformations and outputs in specified format.
@@ -30,7 +30,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
     # Apply quality scaling if needed
     if len(all_quals) > 0 and quality_scaling != 'none':
         flat_quals = np.concatenate(all_quals).astype(np.uint8)
-        
+
         if not keep_bases:
             # Apply scaling on flattened arrays
             flat_mapped = apply_quality_to_bases(
@@ -42,7 +42,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
     if min_quality > 0 and len(all_quals) > 0:
         flat_quals = np.concatenate(all_quals).astype(np.uint8)
         low_quality_mask = flat_quals < min_quality
-        
+
         if keep_bases:
             flat_mapped[low_quality_mask] = ord('N')  # Keep as ASCII
         else:
@@ -54,39 +54,41 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         flat_mapped[cumsum_lengths[i]:cumsum_lengths[i+1]]
         for i in range(len(records))
     ]
-    
+
     # Write all sequences
     for idx, record in enumerate(records):
-        # Write headers to separate file if headers_buffer provided
-        if headers_buffer is not None:
-            headers_buffer.write(record.original_header) 
-        # Only write headers if remove_repeating_header is disabled
-        elif not remove_repeating_header:
-            outfile.write(record.header)
-
-        if not keep_bases:
-            outfile.write(bytes([SEQUENCE_START_MARKER])) # Reserved 255 val
-
         seq_data = processed_seqs[idx]
         
         if not keep_bases and np.any(seq_data == 255): # Don't want to write out 255
-            # This should never happen with proper base mapping, but safety check yk
+             # This should never happen with proper base mapping, but safety check yk
             print(f"WARNING: Sequence {idx} contains value 255, clamping to 254")
             seq_data = np.clip(seq_data, 0, 254)
+        
+        # Write headers to separate file if headers_buffer provided (Mode 3)
+        if headers_buffer is not None:
+            headers_buffer.write(record.original_header)
 
-        # Write sequence data in appropriate format
+        # Only write headers if remove_repeating_header is disabled
+        elif not remove_repeating_header:
+            outfile.write(record.header)
+        
+        if binary and mode == 3: # Only write 255 when mode 3
+            outfile.write(bytes([SEQUENCE_START_MARKER]))
+        
         if binary:
             outfile.write(seq_data.tobytes())
+            # Mode 3 doesn't have newlines between sequences, other modes do
+            if mode != 3:
+                outfile.write(b'\n')
         else:
             if keep_bases:
                 outfile.write(seq_data.tobytes())  # Write ASCII directly
             else:
                 outfile.write(b''.join(BYTE_LOOKUP[seq_data]))  # Convert numbers to text
-        
-        outfile.write(b'\n')
+            outfile.write(b'\n')
         
         # Write quality scores if keep_quality is enabled
         if keep_quality and len(record.quality) > 0:
             outfile.write(b'+\n')
-            outfile.write(record.quality_string)  # ASCII quality string
+            outfile.write(record.quality_string)
             outfile.write(b'\n')
