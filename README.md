@@ -7,7 +7,7 @@ FASTR, an efficient file format designed for lossless storage of sequencing data
 FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality scores into integer-based or binary representations, making it ideal for machine learning pipelines, and specialized data compression workflows.
 
 <p align="center">
-    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-fig1.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-fig1.png?token=GHSAT0AAAAAAC4IEXWHEQL5XFVPABXOHOV42KUVEWQ" alt="FASTR logo, CanvaAI-generated" width="400" border="10" /></a>
+    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-fig1.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-fig1.png?token=GHSAT0AAAAAAC4IEXWHEQL5XFVPABXOHOV42KUVEWQ" alt="FASTR logo, CanvaAI-generated" width="700" border="10" /></a>
 </p>
 
 
