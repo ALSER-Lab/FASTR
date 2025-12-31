@@ -67,3 +67,53 @@ conda create -n fastq_bench -c conda-forge -c bioconda \
 
 conda activate fastq_bench
 ```
+
+### Verify Installation
+```bash
+command -v spring gzip bzip2 xz zstd pigz bsc zip samtools >/dev/null && echo "OK"
+```
+---
+
+## Usage
+
+### Running a Benchmark
+
+Each tool has a wrapper script with consistent arguments:
+```bash
+./scripts/.sh \
+  --input <path/to/input.fastq> \
+  --threads  \
+  --tmpdir /tmp \
+  --out-prefix <output/path/prefix>
+```
+
+### Example: SPRING
+```bash
+./scripts/spring.sh \
+  --input ./fastq_files/D1_S1_L001_R1_001-017.fastq \
+  --threads 32 \
+  --tmpdir /tmp \
+  --out-prefix ./outputs/spring-output/run_001
+```
+
+**Outputs:**
+
+- `./outputs/spring-output/run_001.spring` — compressed file
+- `./outputs/spring-output/run_001.dec.fastq` — decompressed file
+- `./outputs/spring-output/logs/spring_<timestamp>.log` — full log
+- `./outputs/spring-output/logs/metrics.tsv` — metrics row appended
+
+---
+
+## Measurement Methods
+
+| Metric | Method |
+|--------|--------|
+| Wall time | `/usr/bin/time -f "%e"` (seconds) |
+| Peak memory | `/usr/bin/time -f "%M"` (KB → MiB) |
+| File size | `stat -c%s <file>` |
+| Compression ratio | `input_raw_bytes / compressed_bytes` |
+
+For `.gz` inputs, raw size is measured via `gzip -cd input.fastq.gz | wc -c`.
+
+---
