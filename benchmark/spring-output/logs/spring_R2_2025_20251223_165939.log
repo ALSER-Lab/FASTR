@@ -1,0 +1,83 @@
+=== SPRING benchmark (single FASTQ) ===
+Start: 2025-12-23T16:59:39-05:00
+tool=spring
+run_id=20251223_165939
+input=./fastq_files/D1_S1_L001_R1_001-017.fastq
+threads_requested=32
+tmpdir=/tmp
+out_prefix=/alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025
+logfile=/alina-data1/Ezekiel/benchmark_compression/spring-output/logs/spring_R2_2025_20251223_165939.log
+
+gzip_mode_flag=
+compressed_file=/alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025.spring
+decompressed_file=/alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025.dec.fastq
+
+
+---- compress ----
+CMD: spring -c -i ./fastq_files/D1_S1_L001_R1_001-017.fastq -o /alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025.spring -t 32 -w /tmp
+Start(compress): 2025-12-23T16:59:39-05:00
+Temporary directory: /tmp/tmp.fa37JncCHr/
+Starting compression...
+Preprocessing ...
+Max Read length: 250
+Total number of reads: 45078
+Total number of reads without N: 45001
+Preprocessing done!
+Time for this step: 3 s
+Temporary directory size: 5772811
+Reordering ...
+Reading file
+Constructing dictionaries
+Reordering reads
+Reordering done, 43671 were unmatched
+Writing to file
+Done!
+Reordering done!
+Time for this step: 0 s
+temp_dir size: 5961729
+Encoding ...
+Maximum Read length: 250
+Number of non-singleton reads: 1826
+Number of singleton reads: 43175
+Number of reads with N: 77
+Encoding reads
+Encoding done:
+546 singleton reads were aligned
+1 reads with N were aligned
+Encoding done!
+Time for this step: 0 s
+Temporary directory size: 8617090
+Reordering and compressing streams ...
+Reordering and compressing streams done!
+Time for this step: 2 s
+Temporary directory size: 5393374
+
+Sizes of streams after compression: 
+Reads:           2538155 bytes
+Quality:         2749636 bytes
+ID:               105583 bytes
+Creating tar archive ...Tar archive done!
+Time for this step: 0 s
+Compression done!
+Total time for compression: 7 s
+
+Total size:      5457920 bytes
+End(compress): 2025-12-23T16:59:46-05:00 (rc=0)
+
+---- decompress ----
+CMD: spring -d -i /alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025.spring -o /alina-data1/Ezekiel/benchmark_compression/spring-output/R2_2025.dec.fastq -t 32 -w /tmp
+Start(decompress): 2025-12-23T16:59:46-05:00
+Temporary directory: /tmp/tmp.fa37JncCHr/
+Starting decompression...
+Untarring tar archive ...
+Untarring archive done!
+Decompressing ...
+Decompression done!
+Total time for decompression: 3 s
+End(decompress): 2025-12-23T16:59:49-05:00 (rc=0)
+input_matches_decompressed=0
+spring	20251223_165939	32	-t	-t	1	1	7.480000	5.205	4.562586	1098.148	3.220000	23.749	83.426	0
+
+Done: 2025-12-23T16:59:49-05:00
+Log saved to: /alina-data1/Ezekiel/benchmark_compression/spring-output/logs/spring_R2_2025_20251223_165939.log
+Metrics appended to: /alina-data1/Ezekiel/benchmark_compression/spring-output/logs/metrics.tsv

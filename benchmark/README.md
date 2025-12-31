@@ -23,8 +23,7 @@ All measurements use `/usr/bin/time` for wall-clock timing and peak memory (Max 
 │   ├── pigz.sh
 │   ├── renano.sh
 │   └── sam.sh
-├── outputs/
-│   └── <tool>-output/
+│── <tool>-output/
 │       ├── logs/
 │       │   ├── metrics.tsv
 │       │   └── <tool>_<timestamp>.log
