@@ -17,7 +17,7 @@ FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality 
   * Extremely fast (multithreaded) and lossless FASTR-to-FASTQ & FASTQ-to-FASTR conversion.
   * FASTR supports data from all prominent sequencing technologies (Illumina, ONT, PacBio's HiFi, and PacBio's CLR), single-end and paired-end reads, and SRA formats (https://www.ncbi.nlm.nih.gov/sra).
   * FASTR supports all widely-used Phred quality scores (Phred42, Phred63, Phred68Solexa, Phred94, Illumina RTA3, Illumina RTA4, and custom mathematical formulas).
-  * Flexible Output: binar (1 uint8 per FASTR value), integer (3 uint8s per FASTR value), with/without header.
+  * Flexible Output: binary (1 uint8 per FASTR value), integer (3 uint8s per FASTR value), with/without header.
   * FASTR is compatible with minimap2 with no (or <2%) overhead, and with machine learning pipelines (i.e., numerical vectors).
 
 <p align="center">
