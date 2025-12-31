@@ -5,7 +5,7 @@
 
 # FASTR
 <p align="center">
-    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-Logo.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-Logo.png?token=GHSAT0AAAAAAC4IEXWHXJAVGQMMFZHZUGZQ2KUVFBA" alt="FASTR logo, CanvaAI-generated" width="150" border="10" /></a>
+    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-Logo.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-Logo.png" alt="FASTR logo, CanvaAI-generated" width="150" border="10" /></a>
 </p>
 
 FASTR, an efficient file format designed for lossless storage of sequencing data as scalar (numerical) formats. 
@@ -21,7 +21,7 @@ FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality 
   * FASTR is compatible with minimap2 with no (or <2%) overhead, and with machine learning pipelines (i.e., numerical vectors).
 
 <p align="center">
-    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-fig1.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-fig1.png?token=GHSAT0AAAAAAC4IEXWHEQL5XFVPABXOHOV42KUVEWQ" alt="FASTR logo, CanvaAI-generated" width="700" border="10" /></a>
+    <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-fig1.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-fig1.png" alt="FASTR logo, CanvaAI-generated" width="700" border="10" /></a>
 </p>
 
 -----
