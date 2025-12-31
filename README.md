@@ -1,7 +1,7 @@
 # FASTR
 
 
-![FASTR]([https://myoctocat.com/assets/images/base-octocat.svg](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png))
+![FASTR](https://github.com/ALSER-Lab/FASTR/blob/main/FASTR-Logo.png)
 ## Overview
 A high-performance bioinformatics tool designed to convert and compress biological sequence data (FASTQ/FASTA) into scalar (numerical) formats. This tool transforms textual genetic data into integer-based or binary representations, making it ideal for machine learning pipelines, deep learning input generation (DNA-to-Image), and specialized data compression workflows.
 
