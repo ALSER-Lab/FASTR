@@ -48,6 +48,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     """
     metadata_blocks = []
     sra_accession = None
+    length_flag = False
     phred_alphabet_from_metadata = None
     detected_mode = mode
     
@@ -115,6 +116,14 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                             pass
                     line_idx += 1
                     continue
+
+                if line.startswith('#LENGTH='):
+                    length_str = line.split('=', 1)[1].strip()
+                    if length_str.lower() == 'y':
+                        length_flag = True
+                        print(f"Found LENGTH flag: {length_flag}")
+                    line_idx += 1
+                    continue
                 
                 if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
                     # Always split on '=' first since that's our actual delimiter
@@ -146,13 +155,13 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         
         # Find actual data start which is the first @ header
         actual_data_start = first_header if first_header > 0 else 0
-        return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode
+        return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
     
     # Mode 0, 2, and 3: Header compression enabled
     # We reserve \xff (255 in hex) for start of sequence indicator, only for mode 3 (given it doesn't have an '@' indicator)
     first_seq_marker = data.find(b'\xff') if mode == 3 else data.find(b'\n@') 
     if first_seq_marker == -1:
-        return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata, detected_mode
+        return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
     
     # Find the @ before the first < (where sequence actually starts)
     search_start = max(0, first_seq_marker - 1000)
@@ -222,6 +231,14 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             line_idx += 1
             continue
         
+        if line.startswith('#LENGTH='):
+            length_str = line.split('=', 1)[1].strip()
+            if length_str.lower() == 'y':
+                length_flag = True
+                print(f"Found LENGTH flag: {length_flag}")
+            line_idx += 1
+            continue
+        
         if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
             if line.startswith('#STRUCTURE='):
                 current_structure = line.split('=', 1)[1].strip()
@@ -248,7 +265,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             end_index=-1
     ))
             
-    return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode
+    return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
 
 
 
@@ -531,7 +548,7 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subtract_table, 
                                        base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
-                                       mode, headers_file_path=None, data_start_byte=None):
+                                       mode, length_flag=False, headers_file_path=None, data_start_byte=None):
     """
     Worker function that processes a single chunk of binary sequence data in parallel.
     For mode 3, loads headers from file instead of receiving them via pickle.
@@ -781,6 +798,9 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         if sequence_count >= next_metadata.start_index:
                             current_metadata = next_metadata
                             current_metadata_idx += 1
+
+                    if length_flag:
+                        header = f"{header} length={len(bases)}"
                     
                     # Write output
                     temp.write(header.encode('ascii'))
@@ -877,6 +897,9 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         quality_string = bytes((quality_scores + phred_offset).astype(np.uint8)).decode('ascii')
                     else:
                         quality_string = 'I' * len(bases)
+
+                    if length_flag:
+                        header = f"{header} length={len(bases)}"
                     
                     temp.write(f"{header}\n".encode('ascii'))
                     temp.write(bases.encode('ascii'))
@@ -988,6 +1011,9 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
                 else:
                     quality_string = 'I' * len(bases)
+
+                if length_flag:
+                    header = f"{header} length={len(bases)}"
                 
                 temp.write(header.encode('ascii'))
                 temp.write(b'\n')
@@ -1042,7 +1068,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode = parse_metadata_header(data, mode)
+    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag = parse_metadata_header(data, mode)
 
     if detected_mode is not None:
         mode = detected_mode
@@ -1186,7 +1212,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 sra_accession=sra_accession,
                 mode=mode,
                 headers_file_path=mode3_headers_file,  # Pass file path instead of list
-                data_start_byte=data_start_byte
+                data_start_byte=data_start_byte,
+                length_flag=length_flag
             )
             
             temp_files = []
@@ -1267,7 +1294,7 @@ def main():
         chunk_size_mb=args.chunk_size_mb,
         num_workers=args.num_workers,
         mode=args.mode,
-        mode3_headers_file=args.headers_file
+        mode3_headers_file=args.headers_file,
     )
     if args.profile:
         profiler.disable()
