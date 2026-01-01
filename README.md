@@ -1,8 +1,3 @@
-[![GitHub Downloads](https://img.shields.io/github/downloads/ALSER-Lab/FASTR/total.svg?style=social&logo=github&label=Download)](https://github.com/ALSER-Lab/FASTR/releases)
-[![BioConda Install](https://img.shields.io/conda/dn/bioconda/minimap2.svg?style=flag&label=BioConda%20install)](https://anaconda.org/bioconda/minimap2)
-[![PyPI](https://img.shields.io/pypi/v/mappy.svg?style=flat)](https://pypi.python.org/pypi/mappy)
-[![Build Status](https://github.com/ALSER-Lab/FASTR/actions/workflows/ci.yaml/badge.svg)](https://github.com/ALSER-Lab/FASTR/actions)
-
 # FASTR
 <p align="center">
     <a href="https://github.com/ALSER-Lab/FASTR/blob/main/figs/FASTR-Logo.png" target="_blank"><img src="https://raw.githubusercontent.com/ALSER-Lab/FASTR/refs/heads/main/figs/FASTR-Logo.png" alt="FASTR logo, CanvaAI-generated" width="150" border="10" /></a>
