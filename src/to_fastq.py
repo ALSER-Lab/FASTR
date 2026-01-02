@@ -49,6 +49,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     metadata_blocks = []
     sra_accession = None
     length_flag = False
+    second_head_flag = False
     phred_alphabet_from_metadata = None
     detected_mode = mode
     
@@ -124,6 +125,14 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                         print(f"Found LENGTH flag: {length_flag}")
                     line_idx += 1
                     continue
+
+                if line.startswith('#SECOND_HEAD='):
+                    second_head_str = line.split('=', 1)[1].strip()
+                    if second_head_str.lower() == 'y':
+                        second_head_flag = True
+                        print(f"Found SECOND_HEAD flag: {second_head_flag}")
+                    line_idx += 1
+                    continue
                 
                 if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
                     # Always split on '=' first since that's our actual delimiter
@@ -155,13 +164,13 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
         
         # Find actual data start which is the first @ header
         actual_data_start = first_header if first_header > 0 else 0
-        return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
+        return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag, second_head_flag
     
     # Mode 0, 2, and 3: Header compression enabled
     # We reserve \xff (255 in hex) for start of sequence indicator, only for mode 3 (given it doesn't have an '@' indicator)
     first_seq_marker = data.find(b'\xff') if mode == 3 else data.find(b'\n@') 
     if first_seq_marker == -1:
-        return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
+        return metadata_blocks, 0, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag, second_head_flag
     
     # Find the @ before the first < (where sequence actually starts)
     search_start = max(0, first_seq_marker - 1000)
@@ -238,6 +247,14 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                 print(f"Found LENGTH flag: {length_flag}")
             line_idx += 1
             continue
+
+        if line.startswith('#SECOND_HEAD='):
+            second_head_str = line.split('=', 1)[1].strip()
+            if second_head_str.lower() == 'y':
+                second_head_flag = True
+                print(f"Found SECOND_HEAD flag: {second_head_flag}")
+            line_idx += 1
+            continue
         
         if line.startswith('#STRUCTURE:') or line.startswith('#STRUCTURE='):
             if line.startswith('#STRUCTURE='):
@@ -265,7 +282,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             end_index=-1
     ))
             
-    return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag
+    return metadata_blocks, actual_data_start, sra_accession, phred_alphabet_from_metadata, detected_mode, length_flag, second_head_flag
 
 
 
@@ -548,7 +565,7 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subtract_table, 
                                        base_ranges, metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
-                                       mode, length_flag=False, headers_file_path=None, data_start_byte=None):
+                                       mode, length_flag=False, headers_file_path=None, second_head_flag=False, data_start_byte=None):
     """
     Worker function that processes a single chunk of binary sequence data in parallel.
     For mode 3, loads headers from file instead of receiving them via pickle.
@@ -675,7 +692,10 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         quality_string = 'I' * len(bases)
                     
                     # Write output
-                    temp.write(f"{header}\n{bases}\n+\n{quality_string}\n".encode('ascii'))
+                    output_header = f"{header}\n{bases}\n+\n" if not second_head_flag else f"{header}\n{bases}\n+{header[1:]}\n"
+                    temp.write(output_header.encode('ascii'))
+                    temp.write(quality_string.encode('ascii'))
+                    temp.write(b'\n')
                     sequence_count += 1
                     cursor = seq_end
             
@@ -806,7 +826,10 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     temp.write(header.encode('ascii'))
                     temp.write(b'\n')
                     temp.write(bases.encode('ascii'))
-                    temp.write(b'\n+\n')
+                    temp.write(b'\n+')
+                    if second_head_flag:
+                        temp.write(header[1:].encode('ascii'))
+                    temp.write(b'\n')
                     temp.write(quality_string.encode('ascii'))
                     temp.write(b'\n')
                     
@@ -898,12 +921,12 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     else:
                         quality_string = 'I' * len(bases)
 
-                    if length_flag:
-                        header = f"{header} length={len(bases)}"
-                    
                     temp.write(f"{header}\n".encode('ascii'))
                     temp.write(bases.encode('ascii'))
-                    temp.write(b"\n+\n")
+                    temp.write(b"\n+")
+                    if second_head_flag:
+                        temp.write(header[1:].encode('ascii')) # [1:] to skip the '@' in the second header, which is just written as +header, not +@header
+                    temp.write(b"\n")
                     temp.write(quality_string.encode('ascii'))
                     temp.write(b"\n")
                     sequence_count += 1
@@ -1012,16 +1035,19 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 else:
                     quality_string = 'I' * len(bases)
 
-                if length_flag:
+                if length_flag: 
                     header = f"{header} length={len(bases)}"
                 
                 temp.write(header.encode('ascii'))
                 temp.write(b'\n')
                 temp.write(bases.encode('ascii'))
-                temp.write(b'\n+\n')
+                temp.write(b'\n+')
+                if second_head_flag:
+                    temp.write(header[1:].encode('ascii')) # [1:] to skip the '@' in the second header, which is just written as +header, not +@header
+                temp.write(b'\n')
                 temp.write(quality_string.encode('ascii'))
                 temp.write(b'\n')
-                
+                                
                 sequence_count += 1
                 sequences_in_chunk += 1
                 cursor = seq_end
@@ -1068,7 +1094,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
     print(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag = parse_metadata_header(data, mode)
+    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag, second_head_flag = parse_metadata_header(data, mode)
 
     if detected_mode is not None:
         mode = detected_mode
@@ -1213,7 +1239,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 mode=mode,
                 headers_file_path=mode3_headers_file,  # Pass file path instead of list
                 data_start_byte=data_start_byte,
-                length_flag=length_flag
+                length_flag=length_flag,
+                second_head_flag=second_head_flag
             )
             
             temp_files = []

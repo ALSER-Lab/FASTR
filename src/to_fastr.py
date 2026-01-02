@@ -20,7 +20,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
                           paired_end_mode='same_file', chunk_size_mb=8, num_workers=4, adaptive_sample_size=10,
-                          mode=None, mode3_input_headers=None):
+                          mode=None, mode3_input_headers=None, second_head=None):
     """
     Main processing function using streaming architecture to handle files of any size.
     """
@@ -220,13 +220,13 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                     
                     write_sequencer_metadata(metadata_lines, metadata, sequencer_type, struct, 
                                             paired_end, paired_end_mode, quality_scaling, 
-                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map, mode)
+                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map, mode, second_head)
             else:
                 # Single flowcell
                 metadata = current_flowcell_metadata if current_flowcell_metadata else {}
                 write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure_template,
                                         paired_end, paired_end_mode, quality_scaling,
-                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map, mode)
+                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map, mode, second_head)
             
             metadata_bytes = ''.join(metadata_lines).encode('utf-8')
             outfile.write(metadata_bytes)
@@ -246,7 +246,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
 def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure,
                              paired_end, paired_end_mode, quality_scaling,
                              custom_formula, phred_alphabet_max, start_idx, end_idx,
-                             grayscale_map, mode):
+                             grayscale_map, mode, second_head):
     """
     Write metadata headers for different sequencer types.
     """
@@ -326,6 +326,9 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     # OR if has_length flag is set in metadata (PacBio SRA formats)
     if (structure and 'length=' in structure.lower()) or metadata.get('has_length', False):
         length = 'y'
+    if second_head:
+        second_head = 'y'
+
     metadata_lines.append(f"#ACCESSION={accession}\n")
     metadata_lines.append(f"#INSTRUMENT={instrument}\n")
     metadata_lines.append(f"#SAMPLE-ID={sample_id}\n")
@@ -336,6 +339,7 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
     metadata_lines.append(f"#PHRED-ALPHABET=PHRED_{phred_alphabet_max + 1}\n") # We add one because the raw "Max" is one less than the values it can represent in total, due to the inclusion of 0
     metadata_lines.append(f"#GRAY_VALS={grayscale_map[[ord('N')]]},{grayscale_map[[ord('A')]]},{grayscale_map[[ord('G')]]},{grayscale_map[[ord('C')]]},{grayscale_map[[ord('T')]]}\n")
     metadata_lines.append(f"#LENGTH={length}\n")
+    metadata_lines.append(f"#SECOND_HEAD={second_head}\n")
     metadata_lines.append(f"#PAIRED-END={'1' if paired_end else ''}\n")
     metadata_lines.append(f"#PAIRED-END-SAME-FILE={'1' if (paired_end and paired_end_mode == 'same_file') else ''}\n")
     
@@ -446,6 +450,8 @@ def main():
                               help="Keep original quality scores in output (0/1) [0]")
     output_group.add_argument("--phred_alpha", type=str, default='phred42', metavar="STR",
                               help="Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
+    output_group.add_argument("--second_head", type=int, default=0, metavar="INT",
+                              help="Repeat the header on the '+' line in the FASTQ output.")
 
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
@@ -549,7 +555,8 @@ def main():
         chunk_size_mb=args.chunk_mb,
         adaptive_sample_size=args.adaptive_sample, 
         mode=args.mode,
-        mode3_input_headers=args.mode3_headers
+        mode3_input_headers=args.mode3_headers,
+        second_head=args.second_head
     )
 
     end_time = time.perf_counter()
