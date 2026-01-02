@@ -12,7 +12,7 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
                         phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
                         remove_repeating_header, adaptive_structure, 
                         adaptive_delimiter, adaptive_sample_size,
-                        extract_headers=False, mode=None):
+                        extract_headers=False, mode=None, safe_mode=False):
     """
     Worker function that processes a single chunk in parallel.
     Parses FASTQ records and applies transformations.
@@ -45,7 +45,8 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
                 binary, keep_quality,
                 remove_repeating_header, compress_headers, BYTE_LOOKUP,
                 headers_buffer=headers_buffer,
-                mode=mode
+                mode=mode,
+                safe_mode=safe_mode
             )
         
        #  print(f"Worker completed chunk {chunk_id}")

@@ -12,7 +12,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
                               phred_alphabet_max: int, min_quality: int, keep_bases: bool,
                               binary: bool, keep_quality: bool,
                               remove_repeating_header: bool, compress_headers: bool,
-                              BYTE_LOOKUP: np.ndarray, headers_buffer=None, mode: int = None):
+                              BYTE_LOOKUP: np.ndarray, headers_buffer=None, mode: int = None, safe_mode: bool = False):
     """
     Process quality scaling on records and write to file.
     Applies quality-based transformations and outputs in specified format.
@@ -68,10 +68,25 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         if headers_buffer is not None:
             headers_buffer.write(record.original_header)
 
-        # Only write headers if remove_repeating_header is disabled
-        elif not remove_repeating_header:
-            outfile.write(record.header)
+        # For mode 3 we write 255 before bases
+        elif mode == 3:
+            if not remove_repeating_header:
+                outfile.write(record.header)
         
+        # Mode 2 and mode 1 we write 255 after header
+        elif mode in [1, 2]:
+            if not remove_repeating_header:
+                header_bytes = record.header
+                if header_bytes.endswith(b'\n'):
+                    header_bytes = header_bytes[:-1]
+                outfile.write(header_bytes)
+                
+                if binary and safe_mode and mode in [1, 2]:
+                    # Write \xff\n after header (without space between header and \xff)
+                    outfile.write(bytes([SEQUENCE_START_MARKER]))
+                    outfile.write(b'\n')  # Add newline after \xff
+        
+        # Write sequence marker for binary mode
         if binary and mode == 3: # Only write 255 when mode 3
             outfile.write(bytes([SEQUENCE_START_MARKER]))
         
