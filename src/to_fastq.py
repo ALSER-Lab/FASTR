@@ -621,52 +621,75 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
         
         # Mode 1: Only bases compressed (original headers intact)
         if mode == 1:
+            sequences_in_chunk = 0
+            cursor = 0
+            
             with open(mmap_path, 'rb') as f_full:
                 full_data = mmap.mmap(f_full.fileno(), 0, access=mmap.ACCESS_READ)
+                file_size = len(full_data)
                 
-                cursor = 0
                 while cursor < len(chunk_binary):
                     # Find start of header
                     header_start = chunk_binary.find(b'@', cursor)
                     if header_start == -1:
                         break
                     
+                    # Find end of header line
                     header_end = chunk_binary.find(b'\n', header_start)
                     if header_end == -1:
                         break
                     
                     header = chunk_binary[header_start:header_end].decode('utf-8', errors='ignore')
+                    
                     seq_start = header_end + 1
                     
-                    # Find where this sequence ends (next @ header or end of chunk)
-                    next_header = chunk_binary.find(b'\n@', seq_start)
+                    # Find next header by looking for look for just @ after a certain position
+                    # because some sequences naturally end with 0x0a
+                    next_at = chunk_binary.find(b'@', seq_start + 1)
                     
-                    if next_header != -1:
-                        seq_end = next_header
+                    if next_at != -1 and next_at > seq_start:
+                        # Check if there's a newline before this @
+                        if chunk_binary[next_at-1:next_at] == b'\n':
+                            seq_end = next_at - 1
+                        else:
+                            # @ directly after sequence data
+                            seq_end = next_at
                     else:
-                        # Last sequence in chunk, so we need need to check if it extends beyond (like in mode 2)
-                        # Use full file to find next header
+                        # Check in full file
                         abs_seq_start = abs_start + seq_start
-                        search_limit = min(len(full_data), abs_seq_start + 1000000)
+                        search_limit = min(file_size, abs_seq_start + 1000000)
                         
-                        next_header_rel = full_data[abs_seq_start:search_limit].find(b'\n@')
+                        # Look for next @ in full file
+                        search_region = full_data[abs_seq_start:search_limit]
+                        next_at_rel = search_region.find(b'@', 1)
                         
-                        if next_header_rel != -1:
-                            seq_end_abs = abs_seq_start + next_header_rel
+                        if next_at_rel != -1:
+                            next_at_abs = abs_seq_start + next_at_rel
+                            
+                            # Check if there's newline before @
+                            if full_data[next_at_abs-1:next_at_abs] == b'\n':
+                                seq_end_abs = next_at_abs - 1
+                            else:
+                                seq_end_abs = next_at_abs
+                            
                             seq_end = seq_end_abs - abs_start
                             
-                            # Extend chunk if needed
                             if seq_end > len(chunk_binary):
                                 additional_data = full_data[abs_end:seq_end_abs]
                                 chunk_binary += bytes(additional_data)
                         else:
-                            seq_end = len(chunk_binary)
+                            seq_end_abs = file_size
+                            seq_end = seq_end_abs - abs_start
+                            
+                            if seq_end > len(chunk_binary):
+                                additional_data = full_data[abs_end:seq_end_abs]
+                                chunk_binary += bytes(additional_data)
+                            
+                            # Strip final newline only if at EOF
+                            if seq_end > seq_start and chunk_binary[seq_start:seq_end][-1:] == b'\n':
+                                seq_end -= 1
                     
                     seq_data = chunk_binary[seq_start:seq_end]
-                    
-                    # Strip trailing newlines
-                    while seq_data and seq_data[-1:] == b'\n':
-                        seq_data = seq_data[:-1]
                     
                     # Check for metadata block changes
                     if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
@@ -697,19 +720,23 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     temp.write(quality_string.encode('ascii'))
                     temp.write(b'\n')
                     sequence_count += 1
-                    cursor = seq_end
+                    sequences_in_chunk += 1
+                    cursor = seq_end + 1
             
             temp.close()
-            return temp.name, sequence_count - start_seq_idx
+            return temp.name, sequences_in_chunk
 
         elif mode == 0:
             # Mode 0: Headers compressed, bases and quality as plain text
             # @header\nBASES\n+\nQUALITY\n
             
+            sequences_in_chunk = 0
+            cursor = 0
+            
             with open(mmap_path, 'rb') as f_full:
                 full_data = mmap.mmap(f_full.fileno(), 0, access=mmap.ACCESS_READ)
+                file_size = len(full_data)
                 
-                cursor = 0
                 while cursor < len(chunk_binary):
                     # Find start of record (@ header)
                     start_idx = chunk_binary.find(b'@', cursor)
@@ -747,65 +774,70 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         if pair_number > 0:
                             header = f"{header}/{pair_number}"
                     
-                    bases_start = header_end + 1
-                    bases_end = chunk_binary.find(b'\n', bases_start)
-                    if bases_end == -1:
-                        # Need to search in full file
-                        abs_bases_start = abs_start + bases_start
-                        search_limit = min(len(full_data), abs_bases_start + 1000000)
-                        bases_end_rel = full_data[abs_bases_start:search_limit].find(b'\n')
-                        if bases_end_rel != -1:
-                            bases_end_abs = abs_bases_start + bases_end_rel
-                            bases_end = bases_end_abs - abs_start
-                            # Extend chunk if needed
-                            if bases_end > len(chunk_binary):
-                                additional_data = full_data[abs_end:bases_end_abs]
+                    seq_start = header_end + 1
+                    
+                    # Find next header by looking for look for just @ after a certain position
+                    # because some sequences naturally end with 0x0a
+                    next_at = chunk_binary.find(b'@', seq_start + 1)
+                    
+                    if next_at != -1 and next_at > seq_start:
+                        # Check if there's a newline before this @
+                        if chunk_binary[next_at-1:next_at] == b'\n':
+                            seq_end = next_at - 1
+                        else:
+                            # @ directly after sequence data
+                            seq_end = next_at
+                    else:
+                        # Check in full file
+                        abs_seq_start = abs_start + seq_start
+                        search_limit = min(file_size, abs_seq_start + 1000000)
+                        
+                        # Look for next @ in full file
+                        search_region = full_data[abs_seq_start:search_limit]
+                        next_at_rel = search_region.find(b'@', 1)
+                        
+                        if next_at_rel != -1:
+                            next_at_abs = abs_seq_start + next_at_rel
+                            
+                            # Check if there's newline before @
+                            if full_data[next_at_abs-1:next_at_abs] == b'\n':
+                                seq_end_abs = next_at_abs - 1
+                            else:
+                                seq_end_abs = next_at_abs
+                            
+                            seq_end = seq_end_abs - abs_start
+                            
+                            if seq_end > len(chunk_binary):
+                                additional_data = full_data[abs_end:seq_end_abs]
                                 chunk_binary += bytes(additional_data)
                         else:
-                            bases_end = len(chunk_binary)
+                            seq_end_abs = file_size
+                            seq_end = seq_end_abs - abs_start
+                            
+                            if seq_end > len(chunk_binary):
+                                additional_data = full_data[abs_end:seq_end_abs]
+                                chunk_binary += bytes(additional_data)
+                            
+                            # Strip final newline only if at EOF
+                            if seq_end > seq_start and chunk_binary[seq_start:seq_end][-1:] == b'\n':
+                                seq_end -= 1
                     
-                    bases = chunk_binary[bases_start:bases_end].decode('ascii', errors='ignore').strip()
+                    seq_data = chunk_binary[seq_start:seq_end]
                     
+                    # Split seq_data into bases, '+', and quality
                     # Find the '+' line
-                    plus_idx = chunk_binary.find(b'\n+\n', bases_end)
-                    if plus_idx == -1:
-                        # Try without extra newline
-                        plus_idx = chunk_binary.find(b'+\n', bases_end)
-                        if plus_idx == -1:
-                            # Need to search in full file
-                            abs_plus_search = abs_start + bases_end
-                            search_limit = min(len(full_data), abs_plus_search + 1000)
-                            plus_rel = full_data[abs_plus_search:search_limit].find(b'\n+\n')
-                            if plus_rel != -1:
-                                plus_idx = (abs_plus_search + plus_rel) - abs_start
-                                # Extend chunk if needed
-                                if plus_idx > len(chunk_binary):
-                                    additional_data = full_data[abs_end:abs_plus_search + plus_rel + 3]
-                                    chunk_binary += bytes(additional_data)
-                            else:
-                                # Can't find plus, skip this record
-                                cursor = bases_end
-                                continue
-                        qual_start = plus_idx + 2
+                    plus_pos = seq_data.find(b'\n+\n')
+                    if plus_pos == -1:
+                        plus_pos = seq_data.find(b'\n+')
+                        if plus_pos == -1:
+                            # Can't find plus, skip this record
+                            cursor = seq_end + 1
+                            continue
+                        bases = seq_data[:plus_pos].decode('ascii', errors='ignore').strip()
+                        quality_string = seq_data[plus_pos+2:].decode('ascii', errors='ignore').strip()
                     else:
-                        qual_start = plus_idx + 3
-                    
-                    # Quality string should be same length as bases
-                    qual_end = qual_start + len(bases)
-                    if qual_end > len(chunk_binary):
-                        # Need to extend chunk to get full quality string
-                        abs_qual_end = abs_start + qual_end
-                        if abs_qual_end > len(full_data):
-                            abs_qual_end = len(full_data)
-                        additional_data = full_data[abs_end:abs_qual_end]
-                        chunk_binary += bytes(additional_data)
-                    
-                    # Find actual end of quality line (next newline)
-                    qual_line_end = chunk_binary.find(b'\n', qual_start)
-                    if qual_line_end == -1:
-                        quality_string = chunk_binary[qual_start:qual_start + len(bases)].decode('ascii', errors='ignore')
-                    else:
-                        quality_string = chunk_binary[qual_start:qual_line_end].decode('ascii', errors='ignore').strip()
+                        bases = seq_data[:plus_pos].decode('ascii', errors='ignore').strip()
+                        quality_string = seq_data[plus_pos+3:].decode('ascii', errors='ignore').strip()
                     
                     if len(quality_string) < len(bases):
                         quality_string = quality_string + 'I' * (len(bases) - len(quality_string))
@@ -834,12 +866,12 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     temp.write(b'\n')
                     
                     sequence_count += 1
-                    
-                    # Move cursor to after this record
-                    cursor = qual_start + len(quality_string) + 1
+                    sequences_in_chunk += 1
+                    cursor = seq_end + 1
             
             temp.close()
-            return temp.name, sequence_count - start_seq_idx
+            return temp.name, sequences_in_chunk
+        
 
         elif mode == 3:
             with open(mmap_path, 'rb') as f_full:
@@ -934,128 +966,140 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
             temp.close()
             return temp.name, sequence_count - start_seq_idx
 
-        # Mode 2: Headers compressed, bases as binary
         elif mode == 2:  
             sequences_in_chunk = 0
-            
             cursor = 0
             
-            while cursor < len(chunk_binary):
-                # Find start of compressed header
-                header_start = chunk_binary.find(b'@', cursor)
-                if header_start == -1:
-                    break
+            with open(mmap_path, 'rb') as f_full:
+                full_data = mmap.mmap(f_full.fileno(), 0, access=mmap.ACCESS_READ)
+                file_size = len(full_data)
                 
-                # Find end of header (newline)
-                header_end = chunk_binary.find(b'\n', header_start)
-                if header_end == -1:
-                    break
-                
-                header_content = chunk_binary[header_start+1:header_end].decode('utf-8', errors='ignore').strip()
-                unique_id = None
-                pair_number = 0
-                
-                if '/' in header_content:
-                    parts = header_content.rsplit('/', 1)
-                    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 1 and int(parts[1]) in [1, 2]:
-                        unique_id = parts[0]
-                        pair_number = int(parts[1])
+                while cursor < len(chunk_binary):
+                    header_start = chunk_binary.find(b'@', cursor)
+                    if header_start == -1:
+                        break
+                    
+                    header_end = chunk_binary.find(b'\n', header_start)
+                    if header_end == -1:
+                        break
+                    
+                    header_content = chunk_binary[header_start+1:header_end].decode('utf-8', errors='ignore').strip()
+                    unique_id = None
+                    pair_number = 0
+                    
+                    if '/' in header_content:
+                        parts = header_content.rsplit('/', 1)
+                        if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 1 and int(parts[1]) in [1, 2]:
+                            unique_id = parts[0]
+                            pair_number = int(parts[1])
+                        else:
+                            unique_id = header_content
                     else:
                         unique_id = header_content
-                else:
-                    unique_id = header_content
-                
-                # Reconstruct full header
-                if unique_id and current_metadata and current_metadata.structure_template:
-                    header = reconstruct_header_from_structure(
-                        current_metadata.structure_template,
-                        unique_id,
-                        current_metadata.sequencer_type,
-                        pair_number
-                    )
-                else:
-                    if sra_accession:
-                        header = f"@{sra_accession}.{sequence_count}"
+                    
+                    if unique_id and current_metadata and current_metadata.structure_template:
+                        header = reconstruct_header_from_structure(
+                            current_metadata.structure_template,
+                            unique_id,
+                            current_metadata.sequencer_type,
+                            pair_number
+                        )
                     else:
-                        header = f"@seq{sequence_count}"
-                
-                # Sequence starts right after header newline
-                seq_start = header_end + 1
-                
-                next_header = chunk_binary.find(b'\n@', seq_start)
-                
-                if next_header != -1:
-                    seq_end = next_header
-                else:
-                    # Last sequence in chunk, so we need to check if it extends beyond
-                    with open(mmap_path, 'rb') as f_full:
-                        full_data = mmap.mmap(f_full.fileno(), 0, access=mmap.ACCESS_READ)
+                        if sra_accession:
+                            header = f"@{sra_accession}.{sequence_count}"
+                        else:
+                            header = f"@seq{sequence_count}"
+                    
+                    seq_start = header_end + 1
+                    
+                    # Find next header by looking for look for just @ after a certain position
+                    # because some sequences naturally end with 0x0a
+                    next_at = chunk_binary.find(b'@', seq_start + 1)
+                    
+                    if next_at != -1 and next_at > seq_start:
+                        # Check if there's a newline before this @
+                        if chunk_binary[next_at-1:next_at] == b'\n':
+                            seq_end = next_at - 1
+                        else:
+                            # @ directly after sequence data
+                            seq_end = next_at
+                    else:
+                        # Check in full file
                         abs_seq_start = abs_start + seq_start
-                        search_limit = min(len(full_data), abs_seq_start + 1000000)
+                        search_limit = min(file_size, abs_seq_start + 1000000)
                         
-                        next_header_rel = full_data[abs_seq_start:search_limit].find(b'\n@')
+                        # Look for next @ in full file
+                        search_region = full_data[abs_seq_start:search_limit]
+                        next_at_rel = search_region.find(b'@', 1)
                         
-                        if next_header_rel != -1:
-                            seq_end_abs = abs_seq_start + next_header_rel
+                        if next_at_rel != -1:
+                            next_at_abs = abs_seq_start + next_at_rel
+                            
+                            # Check if there's newline before @
+                            if full_data[next_at_abs-1:next_at_abs] == b'\n':
+                                seq_end_abs = next_at_abs - 1
+                            else:
+                                seq_end_abs = next_at_abs
+                            
                             seq_end = seq_end_abs - abs_start
                             
-                            # Extend chunk if needed
                             if seq_end > len(chunk_binary):
                                 additional_data = full_data[abs_end:seq_end_abs]
                                 chunk_binary += bytes(additional_data)
                         else:
-                            seq_end = len(chunk_binary)
-                
-                seq_data = chunk_binary[seq_start:seq_end]
-                
-                # Strip trailing newlines
-                while seq_data and seq_data[-1:] == b'\n':
-                    seq_data = seq_data[:-1]
-                
-                # Check for metadata block changes
-                if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-                    next_metadata = metadata_blocks[current_metadata_idx + 1]
-                    if sequence_count >= next_metadata.start_index:
-                        current_metadata = next_metadata
-                        current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                        current_metadata_idx += 1
-                
-                # Convert binary to bases
-                seq_array = np.frombuffer(seq_data, dtype=np.uint8)
-                bases_array = reverse_map[seq_array]
-                bases = bases_array.tobytes().decode('ascii')
-                
-                # Reconstruct quality
-                if current_inverse_table is not None:
-                    quality_scores = reverse_scaling_to_quality(
-                        seq_array, subtract_table,
-                        current_inverse_table, max_phred=phred_alphabet_max
-                    )
-                    quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
-                else:
-                    quality_string = 'I' * len(bases)
+                            seq_end_abs = file_size
+                            seq_end = seq_end_abs - abs_start
+                            
+                            if seq_end > len(chunk_binary):
+                                additional_data = full_data[abs_end:seq_end_abs]
+                                chunk_binary += bytes(additional_data)
+                            
+                            # Strip final newline only if at EOF
+                            if seq_end > seq_start and chunk_binary[seq_start:seq_end][-1:] == b'\n':
+                                seq_end -= 1
+                    
+                    seq_data = chunk_binary[seq_start:seq_end]
+                    
+                    if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+                        next_metadata = metadata_blocks[current_metadata_idx + 1]
+                        if sequence_count >= next_metadata.start_index:
+                            current_metadata = next_metadata
+                            current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                            current_metadata_idx += 1
+                    
+                    seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+                    bases_array = reverse_map[seq_array]
+                    bases = bases_array.tobytes().decode('ascii')
 
-                if length_flag: 
-                    header = f"{header} length={len(bases)}"
-                
-                temp.write(header.encode('ascii'))
-                temp.write(b'\n')
-                temp.write(bases.encode('ascii'))
-                temp.write(b'\n+')
-                if second_head_flag:
-                    temp.write(header[1:].encode('ascii')) # [1:] to skip the '@' in the second header, which is just written as +header, not +@header
-                temp.write(b'\n')
-                temp.write(quality_string.encode('ascii'))
-                temp.write(b'\n')
-                                
-                sequence_count += 1
-                sequences_in_chunk += 1
-                cursor = seq_end
+                    if current_inverse_table is not None:
+                        quality_scores = reverse_scaling_to_quality(
+                            seq_array, subtract_table,
+                            current_inverse_table, max_phred=phred_alphabet_max
+                        )
+                        quality_string = quality_to_ascii(quality_scores, phred_offset).decode('ascii')
+                    else:
+                        quality_string = 'I' * len(bases)
+
+                    if length_flag: 
+                        header = f"{header} length={len(bases)}"
+                    
+                    temp.write(header.encode('ascii'))
+                    temp.write(b'\n')
+                    temp.write(bases.encode('ascii'))
+                    temp.write(b'\n+')
+                    if second_head_flag:
+                        temp.write(header[1:].encode('ascii'))
+                    temp.write(b'\n')
+                    temp.write(quality_string.encode('ascii'))
+                    temp.write(b'\n')
+                                    
+                    sequence_count += 1
+                    sequences_in_chunk += 1
+                    cursor = seq_end + 1
             
             temp.close()
-            return temp.name, sequence_count - start_seq_idx
+            return temp.name, sequences_in_chunk
 
-    
     except Exception as e:
         print(f"ERROR in worker processing chunk {chunk_id}: {e}")
         import traceback
@@ -1171,41 +1215,35 @@ def reconstruct_fastq(input_path: str, output_path: str,
             if mode == 3:
                 # Mode 3 splits on 255 markers
                 search_start = max(pos, chunk_end - 1000)
-                last_marker = data[buffer_start + search_start:buffer_start + chunk_end].rfind(b'\xff')
+                search_region = data[buffer_start + search_start:buffer_start + chunk_end]
+                last_marker = search_region.rfind(b'\xff')
                 
-                if last_marker != -1 and (search_start + last_marker) > pos:
-                    last_marker_abs = search_start + last_marker
-                    search_beyond = min(buffer_len, last_marker_abs + 1000000)
-                    next_marker_search = data[buffer_start + last_marker_abs + 1:buffer_start + search_beyond].find(b'\xff')
-                    
-                    if next_marker_search != -1:
-                        chunk_end = last_marker_abs + 1 + next_marker_search
-                    else:
-                        chunk_end = min(search_beyond, buffer_len)
+                if last_marker != -1:
+                    chunk_end = search_start + last_marker
             else:
                 # Mode 0, 1, and 2 split on the normal FASTQ '@' headers
                 search_start = max(pos, chunk_end - 1000)
-                last_header = data[buffer_start + search_start:buffer_start + chunk_end].rfind(b'\n@')
+                search_region = data[buffer_start + search_start:buffer_start + chunk_end]
+                last_header = search_region.rfind(b'\n@')
                 
-                if last_header != -1 and (search_start + last_header) > pos:
+                if last_header != -1:
                     chunk_end = search_start + last_header + 1
             
-            if mode == 3:
-                abs_start = buffer_start + pos
-                abs_end = buffer_start + chunk_end
-            else:
-                overlap_start = max(0, pos - 500)
-                abs_start = buffer_start + overlap_start
-                abs_end = buffer_start + chunk_end
+            if chunk_end <= pos:
+                chunk_end = min(pos + chunk_size_bytes, buffer_len)
+            
+            abs_start = buffer_start + pos
+            abs_end = buffer_start + chunk_end
             
             if abs_end > abs_start:
                 if mode == 3:
                     chunk_view = data[abs_start:abs_end]
                     estimated_seqs = chunk_view.count(b'\xff')
                 else:
-                    actual_start_in_chunk = pos - (abs_start - buffer_start)
                     chunk_view = data[abs_start:abs_end]
-                    estimated_seqs = chunk_view[actual_start_in_chunk:].count(b'\n@')
+                    estimated_seqs = chunk_view.count(b'\n@')
+                    if chunk_view.startswith(b'@'):
+                        estimated_seqs += 1
                 
                 yield (chunk_id, abs_start, abs_end, start_seq_idx)
                 
