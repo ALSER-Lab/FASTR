@@ -1,0 +1,2 @@
+tool\trun_id\tthreads_requested\tthread_flag_compress\tthread_flag_decompress\tmt_compress\tmt_decompress\tcompression_time_s\tcompressed_size_mb\tcompression_ratio\tpeak_mem_compress_mb\tdecompression_time_s\tdecompressed_size_mb\tpeak_mem_decompress_mb\tinput_matches_decompressed
+bsc	20251223_172247	32	implicit	implicit	1	1	0.270000	5.529	4.295612	122.902	0.440000	23.749	202.617	1
