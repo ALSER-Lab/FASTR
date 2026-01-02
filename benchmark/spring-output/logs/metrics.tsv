@@ -1,0 +1,2 @@
+tool	run_id	threads_requested	thread_flag_compress	thread_flag_decompress	mt_compress	mt_decompress	compression_time_s	compressed_size_mb	compression_ratio	peak_mem_compress_mb	decompression_time_s	decompressed_size_mb	peak_mem_decompress_mb	input_matches_decompressed
+spring	20251223_170034	32	-t	-t	1	1	7.800000	5.205	4.562586	1098.191	3.480000	23.749	83.520	0

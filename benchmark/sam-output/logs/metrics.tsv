@@ -1,0 +1,4 @@
+tool	run_id	threads_requested	thread_flag_compress	thread_flag_decompress	mt_compress	mt_decompress	compression_time_s	compressed_size_mb	compression_ratio	peak_mem_compress_mb	decompression_time_s	decompressed_size_mb	peak_mem_decompress_mb	input_matches_decompressed
+samtools_bam	20251229_102050	32	picard:NA	-@	0	1	4.420000	7.803	3.043462	218.660	0.190000	23.190	19.848	0
+samtools_sam	20251229_102223	32	picard:NA;samtools:-@	-@	1	1	4.070000	24.136	0.983958	222.668	0.260000	23.190	39.801	0
+samtools_cram_unaligned	20251229_102317	32	picard:NA;samtools:-@	-@	1	1	5.060000	5.520	4.301968	218.445	0.270000	23.190	50.508	0
