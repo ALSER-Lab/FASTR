@@ -136,7 +136,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 adaptive_delimiter=delimiter, 
                 adaptive_sample_size=adaptive_sample_size,
                 extract_headers=extract_headers,
-                mode=mode
+                mode=mode,
+                safe_mode=safe_mode
             )
             
             # Use imap to process chunks as they're read (streaming)
@@ -493,6 +494,7 @@ def main():
         args.bin_write = 0
         args.keep_bases = 1
         args.keep_qual = 1
+        args.safe_mode = 0 # Safe mode not needed for mode 0 due to a lack of binary (Just compressed headers and not-processed base/qualities)
     elif args.mode == 1:
         args.compress_hdr = 0
         args.bin_write = 1
@@ -503,6 +505,7 @@ def main():
         args.compress_hdr = 1
         args.rm_repeat_hdr = 1
         args.bin_write = 1
+        args.safe_mode = 0 # Safe mode not needed for mode 3 (as it is already safe)
 
     # Phred alphabet configuration
     if args.phred_alpha == "phred42":

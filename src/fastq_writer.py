@@ -67,11 +67,9 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         # Write headers to separate file if headers_buffer provided (Mode 3)
         if headers_buffer is not None:
             headers_buffer.write(record.original_header)
-
-        # For mode 3 we write 255 before bases
-        elif mode == 3:
-            if not remove_repeating_header:
-                outfile.write(record.header)
+            # For mode 3 we write 255 before bases
+            if binary:
+                outfile.write(bytes([SEQUENCE_START_MARKER]))
         
         # Mode 2 and mode 1 we write 255 after header
         elif mode in [1, 2]:
@@ -80,16 +78,13 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
                 if header_bytes.endswith(b'\n'):
                     header_bytes = header_bytes[:-1]
                 outfile.write(header_bytes)
-                
-                if binary and safe_mode and mode in [1, 2]:
-                    # Write \xff\n after header (without space between header and \xff)
+                if safe_mode: # 255 then \n
                     outfile.write(bytes([SEQUENCE_START_MARKER]))
-                    outfile.write(b'\n')  # Add newline after \xff
+                    outfile.write(b'\n')
+                else: # Just \n
+                    outfile.write(b'\n')
         
-        # Write sequence marker for binary mode
-        if binary and mode == 3: # Only write 255 when mode 3
-            outfile.write(bytes([SEQUENCE_START_MARKER]))
-        
+        # Write sequence data
         if binary:
             outfile.write(seq_data.tobytes())
             # Mode 3 doesn't have newlines between sequences, other modes do
