@@ -1,75 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Wrapper for Info-ZIP benchmarking.
-# Runs compress -> decompress cycle on a single file.
-#
-# Note: Maps --fast/--best to zip -1/-9 
-#
+
 # Usage:
-#   ./zip.sh --input file.fastq --fast --out-prefix /path/to/results/run1
+#   ./renano.sh \
+#     --input ./fastq_files/D1_S1_L001_R1_001-017.fastq \
+#     --threads 32 \
+#     --tmpdir /tmp \
+#     --out-prefix /folder/HG002_R1_001-017
 
-#
-# Configs and Defaults
-#
+# Configs
 IN=""
-MODE="fast"           # fast (-1) or best (-9)
+THREADS="16"
 TMPDIR="/tmp"
-OUT_PREFIX="zip-output"
-TOOL="zip"
-
-# zip/unzip is single-threaded
-THREADS="1"
-MT_COMPRESS=0
-MT_DECOMPRESS=0
-THREAD_FLAG_COMPRESS="NA"
-THREAD_FLAG_DECOMPRESS="NA"
-
-#
-# Parse named args
-#
+OUT_PREFIX="renano-output"
+TOOL="renano"
+# Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --input) IN="$2"; shift 2;;
+    --threads) THREADS="$2"; shift 2;;
     --tmpdir) TMPDIR="$2"; shift 2;;
     --out-prefix) OUT_PREFIX="$2"; shift 2;;
-    --fast) MODE="fast"; shift 1;;
-    --best) MODE="best"; shift 1;;
     -h|--help)
       cat <<EOF
 Usage:
-  $0 --input <file> [--fast|--best] [--tmpdir DIR] [--out-prefix PREFIX]
+  $0 --input <file.fastq> [--threads N] [--tmpdir DIR] [--out-prefix PREFIX]
 
 Notes:
-  - Default is --fast (zip -1).
-  - Use OUT_PREFIX to encode the run identifier (e.g., .../run1_fast, .../run2_best).
+  - This script expects an UNCOMPRESSED .fastq input.
+  - RENANO supports threads with -t for both compression and decompression.
 EOF
       exit 0
       ;;
-    *) echo "ERROR: Unknown argument: $1"; exit 1;;
+    *)
+      echo "ERROR: Unknown argument: $1"
+      exit 1
+      ;;
   esac
 done
 
 [[ -n "$IN" ]] || { echo "ERROR: --input is required"; exit 1; }
+
+# Guard against passing a directory or trailing slash
 OUT_PREFIX="${OUT_PREFIX%/}"
 
-# Map mode to actual zip flags
-ZIP_LEVEL="1"
-if [[ "$MODE" == "best" ]]; then
-  ZIP_LEVEL="9"
-fi
-
-# --- Sanity Checks ---
-# We need standard zip/unzip, usually found in the conda env or system path.
-command -v zip >/dev/null 2>&1 || { echo "ERROR: zip not found in PATH (activate conda env)."; exit 1; }
-command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip not found in PATH (install unzip in the same conda env)."; exit 1; }
-command -v zipinfo >/dev/null 2>&1 || { echo "ERROR: zipinfo not found in PATH (usually comes with unzip/zip)."; exit 1; }
-
-# TMPDIR checks
+# Sanity Checks 
+[[ "$THREADS" =~ ^[0-9]+$ ]] || { echo "ERROR: --threads must be an integer"; exit 1; }
 [[ -d "$TMPDIR" ]] || { echo "ERROR: --tmpdir does not exist: $TMPDIR"; exit 1; }
 [[ -w "$TMPDIR" ]] || { echo "ERROR: --tmpdir not writable: $TMPDIR"; exit 1; }
 
-# logging
+command -v renano >/dev/null 2>&1 || { echo "ERROR: renano not found in PATH. Activate your conda env."; exit 1; }
+
+# RENANO (per README) does not advertise .gz input; enforce uncompressed for reproducibility
+if [[ "$IN" == *.gz ]]; then
+  echo "ERROR: RENANO wrapper expects uncompressed .fastq (got .gz)."
+  echo "       Please gunzip outside the benchmark and re-run."
+  exit 1
+fi
+
+# Threading metadata (RENANO supports -t in both phases)
+THREAD_FLAG_COMPRESS="-t"
+THREAD_FLAG_DECOMPRESS="-t"
+MT_COMPRESS=1
+MT_DECOMPRESS=1
+
+# Output paths
 OUT_DIR="$(dirname "$OUT_PREFIX")"
 BASE_NAME="$(basename "$OUT_PREFIX")"
 [[ "$OUT_DIR" != "." ]] && mkdir -p "$OUT_DIR"
@@ -81,29 +77,30 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOGFILE="$LOGDIR/${TOOL}_${BASE_NAME}_${RUN_ID}.log"
 METRICS_TSV="$LOGDIR/metrics.tsv"
 
-# Pipe all stdout/stderr to logfile and console
+# Logging: redirect stdout/stderr to logfile and console
 exec > >(tee -a "$LOGFILE") 2>&1
 
-echo "=== zip benchmark (single file) ==="
+echo "=== RENANO benchmark (single FASTQ) ==="
 echo "Start: $(date -Is)"
 echo "tool=$TOOL"
 echo "run_id=$RUN_ID"
 echo "input=$IN"
-echo "mode=$MODE (zip -$ZIP_LEVEL)"
+echo "threads_requested=$THREADS"
 echo "tmpdir=$TMPDIR"
 echo "out_prefix=$OUT_PREFIX"
 echo "logfile=$LOGFILE"
 echo
 
-ZIP_OUT="${OUT_PREFIX}.zip"
-DEC_OUT="${OUT_PREFIX}.dec"
+RENANO_OUT="${OUT_PREFIX}.renano"
+DEC_OUT="${OUT_PREFIX}.dec.fastq"
 
-echo "zip_out=$ZIP_OUT"
-echo "dec_out=$DEC_OUT"
+echo "compressed_file=$RENANO_OUT"
+echo "decompressed_file=$DEC_OUT"
 echo
 
-# Helper to capture /usr/bin/time metrics without parsing clutter
 run_tm() {
+  # stdout: "<seconds>\t<peak_mb>"  (captured by read)
+  # stderr: command output/progress (goes into log)
   local label="$1"; shift
   local tf
   tf="$(mktemp -p "$TMPDIR" "time_${label}_XXXX.txt")"
@@ -111,7 +108,6 @@ run_tm() {
   { echo; echo "---- $label ----"; echo "CMD: $*"; echo "Start($label): $(date -Is)"; } >&2
 
   set +e
-  # Using system time binary for consistent memory reporting (%M is max RSS in KB)
   /usr/bin/time -f "%e\t%M" -o "$tf" "$@" 1>&2
   local rc=$?
   set -e
@@ -126,51 +122,38 @@ run_tm() {
   awk -F'\t' 'END{printf "%.6f\t%.3f\n",$1,($2/1024.0)}' "$tf"
   rm -f "$tf"
 }
+# Compression (no reference)
+rm -f "$RENANO_OUT"
+read c_time c_peak_mb < <(run_tm "compress" renano -t "$THREADS" "$IN" "$RENANO_OUT")
+[[ -s "$RENANO_OUT" ]] || { echo "ERROR: compression did not produce $RENANO_OUT"; exit 1; }
 
-#
-# Compression
-#
-rm -f "$ZIP_OUT"
-# -j junk paths (store just filename), -q quiet
-read c_time c_peak_mb < <(run_tm "compress" zip -q "-$ZIP_LEVEL" -j "$ZIP_OUT" "$IN")
-[[ -s "$ZIP_OUT" ]] || { echo "ERROR: compression did not produce $ZIP_OUT"; exit 1; }
-
-# calculate ratio
+# Stats
 in_bytes="$(stat -c%s "$IN")"
-out_bytes="$(stat -c%s "$ZIP_OUT")"
+out_bytes="$(stat -c%s "$RENANO_OUT")"
 comp_size_mb="$(awk -v b="$out_bytes" 'BEGIN{printf "%.3f", b/1048576.0}')"
 comp_ratio="$(awk -v inb="$in_bytes" -v outb="$out_bytes" 'BEGIN{printf "%.6f", inb/outb}')"
 
-#
-# Decompression
-#
-rm -f "$DEC_OUT"
-# Need the internal filename to extract specifically that file
-member="$(zipinfo -1 "$ZIP_OUT" | head -n 1)"
-[[ -n "$member" ]] || { echo "ERROR: could not determine zip member name"; exit 1; }
-echo "zip_member=$member"
 
-# Using 'unzip -p' > file to avoid interactive prompts or path issues
-read d_time d_peak_mb < <(
-  run_tm "decompress" bash -c 'unzip -p -- "$1" "$2" > "$3"' unzip_pipe "$ZIP_OUT" "$member" "$DEC_OUT"
-)
+# Decompression
+rm -f "$DEC_OUT"
+read d_time d_peak_mb < <(run_tm "decompress" renano -d -t "$THREADS" "$RENANO_OUT" "$DEC_OUT")
 [[ -s "$DEC_OUT" ]] || { echo "ERROR: decompression did not produce $DEC_OUT"; exit 1; }
 
 dec_bytes="$(stat -c%s "$DEC_OUT")"
 dec_size_mb="$(awk -v b="$dec_bytes" 'BEGIN{printf "%.3f", b/1048576.0}')"
 
-# verify integrity
+
+# Cerify input matches decompressed
+
 input_matches_decompressed=0
 if cmp -s -- "$IN" "$DEC_OUT"; then
   input_matches_decompressed=1
 fi
 echo "input_matches_decompressed=$input_matches_decompressed"
 
-#
-# Metrics TSV save
-#
+
+# Metrics TSV logs
 if [[ ! -f "$METRICS_TSV" ]]; then
-# Header
   printf "tool\trun_id\tthreads_requested\tthread_flag_compress\tthread_flag_decompress\tmt_compress\tmt_decompress\tcompression_time_s\tcompressed_size_mb\tcompression_ratio\tpeak_mem_compress_mb\tdecompression_time_s\tdecompressed_size_mb\tpeak_mem_decompress_mb\tinput_matches_decompressed\n" \
     >> "$METRICS_TSV"
 fi
