@@ -4,6 +4,7 @@ from data_structures import FASTQRecord
 from header_compression import adaptive_compress_header, analyze_headers_for_pattern, compress_header
 
 
+
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray,
                                     phred_map: Optional[np.ndarray], compress_headers: bool,
                                     sequencer_type: str, paired_end: bool, keep_bases: bool,
@@ -48,7 +49,6 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
         )
     
     # Pre-create binary map ONCE if needed
-    binary_map = None
     
     # Process in batches to avoid numpy split overhead
     BATCH_SIZE = 10000  # Process 10k records at a time
@@ -75,8 +75,6 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
         # Apply base mapping to ENTIRE batch at once
         if keep_bases:
             mapped_batch = all_seq_array
-        elif binary_map is not None:
-            mapped_batch = binary_map[all_seq_array]
         else:
             mapped_batch = base_map[all_seq_array]
         

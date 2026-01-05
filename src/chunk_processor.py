@@ -1,26 +1,30 @@
 import io
 import traceback
+from typing import Tuple
 import numpy as np
-from typing import Tuple, Optional
 from fastq_parser import parse_fastq_records_from_buffer
 from fastq_writer import process_and_write_records
+import logging
+logger = logging.getLogger(__name__)
 
 
-def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
-                        sequencer_type, paired_end, keep_bases, 
-                        keep_quality, quality_scaling, custom_formula,
-                        phred_alphabet_max, min_quality, BYTE_LOOKUP, binary,
-                        remove_repeating_header, adaptive_structure, 
-                        adaptive_delimiter, adaptive_sample_size,
-                        extract_headers=False, mode=None, safe_mode=False):
+def process_chunk_worker(chunk_data: Tuple[int, bytes, int], base_map: np.ndarray, phred_map: np.ndarray, compress_headers: bool,
+                        sequencer_type: str, paired_end: bool, keep_bases: bool, 
+                        keep_quality: bool, quality_scaling: str, custom_formula: str,
+                        phred_alphabet_max: int, min_quality: int, BYTE_LOOKUP: np.ndarray, binary: bool,
+                        remove_repeating_header: bool, adaptive_structure: str, 
+                        adaptive_delimiter: str, adaptive_sample_size: int,
+                        extract_headers: bool=False, mode: int=None, safe_mode: bool=False, verbose: bool=False):
     """
-    Worker function that processes a single chunk in parallel.
-    Parses FASTQ records and applies transformations.
-    Returns: (chunk_id, processed_bytes, metadata, structure_template, record_count)
+    Worker function that parses FASTQ records and applies transformations.
+    
+    Returns:
+        tuple: (chunk_id, processed_bytes, metadata, structure, delimiter, count, headers_data)
     """
     try:
         chunk_id, buffer, start_index = chunk_data
-        # print(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")
+        if verbose: 
+            logger.debug(f"Worker processing chunk {chunk_id} with {len(buffer)} bytes")
         
         # Parse the records from buffer
         records, _, metadata, structure, delimiter, count = parse_fastq_records_from_buffer(
@@ -32,7 +36,8 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
             adaptive_sample_size=adaptive_sample_size
         )
         
-        # print(f"Worker parsed {count} records from chunk {chunk_id}")
+        if verbose:
+            logger.debug(f"Worker parsed {count} records from chunk {chunk_id}")
         
         # Process records and write to in-memory buffer
         output_buffer = io.BytesIO()
@@ -54,16 +59,20 @@ def process_chunk_worker(chunk_data, base_map, phred_map, compress_headers,
         return (chunk_id, output_buffer.getvalue(), metadata, structure, delimiter, count, headers_data)
         
     except Exception as e:
-        print(f"ERROR in worker processing chunk {chunk_id}: {e}")
-        traceback.print_exc()
+        logger.error(f"Error in worker processing chunk {chunk_id}: {e}", exc_info=True)
         raise
 
 
 def chunk_generator(fastq_path: str, chunk_size_bytes: int):
     """
-    Generator function to yield file chunks as they're read.
-    Makes sure chunks end on complete record boundaries. 
-    Yields: (chunk_id, buffer_data, start_index)
+    Generator that yields file chunks ending on complete record boundaries.
+    
+    Args:
+        fastq_path: Path to FASTQ input file
+        chunk_size_bytes: Size of chunks to read
+        
+    Yields:
+        tuple: (chunk_id, buffer_data, start_record_index)
     """
     buffer = b''
     chunk_id = 0
@@ -95,4 +104,4 @@ def chunk_generator(fastq_path: str, chunk_size_bytes: int):
                 chunk_id += 1
                 
                 if chunk_id % 10 == 0:
-                    print(f"Read {chunk_id} chunks...")
+                    logger.info(f"Read {chunk_id} chunks...")

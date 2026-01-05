@@ -1,5 +1,7 @@
 import re
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
 
 
 def get_scaling_equation(scaling_method: str, custom_formula=None, phred_alphabet_max=41) -> str:
@@ -75,14 +77,13 @@ def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray
         return result.astype(np.float32)
     
     except Exception as e:
-        print(f"ERROR: Failed to parse custom formula '{formula}'")
-        print(f"Error details: {e}")
-        print("\nSupported operations: +, -, *, /, ** (power), (), ln(), log(), log10(), exp(), sqrt(), abs()")
-        print("Variable 'x' represents quality scores")
-        print("\nExample formulas:")
-        print("  '1 + 62 * (x - 40) / 53'")
-        print("  'ln(x - 39) / ln(54) * 62 + 1'")
-        print("  'x ** 2 / 100'")
+        logger.error(f"Failed to parse custom formula '{formula}': {e}")
+        logger.info("Supported operations: +, -, *, /, ** (power), (), ln(), log(), log10(), exp(), sqrt(), abs()")
+        logger.info("Variable 'x' represents quality scores")
+        logger.info("Example formulas:")
+        logger.info("  '1 + 62 * (x - 40) / 53'")
+        logger.info("  'ln(x - 39) / ln(54) * 62 + 1'")
+        logger.info("  'x ** 2 / 100'")
         raise
 
 
@@ -190,9 +191,10 @@ def validate_and_adjust_formula(formula: str, phred_alphabet_max: int) -> str:
         min_val = np.min(output)
         max_val = np.max(output)
         
-        print(f"\nFormula validation for '{formula}':")
-        print(f"  Input range: 1-{phred_alphabet_max}")
-        print(f"  Output range: {min_val:.2f} to {max_val:.2f}")
+        logger.info(f"Formula validation for '{formula}':")
+        logger.info(f"  Input range: 1-{phred_alphabet_max}")
+        logger.info(f"  Output range: {min_val:.2f} to {max_val:.2f}")
+
         
         # Re-evaluate without clipping to see original range
         cleaned = re.sub(r'^\s*f\s*\(\s*x\s*\)\s*=\s*', '', formula.strip()).replace('^', '**')
@@ -223,25 +225,22 @@ def validate_and_adjust_formula(formula: str, phred_alphabet_max: int) -> str:
         total_values = len(test_qualities)
         
         if raw_min < 1 or raw_max > 63:
-            print(f"  WARNING: Formula produces values outside 1-63 range before clipping!")
-            print(f"  Raw output range: {raw_min:.2f} to {raw_max:.2f}")
-            print(f"  Values clamped: {clamped_low + clamped_high}/{total_values} " +
+            logger.warning(f"Formula produces values outside 1-63 range before clipping!")
+            logger.warning(f"Raw output range: {raw_min:.2f} to {raw_max:.2f}")
+            logger.debug(f"  Values clamped: {clamped_low + clamped_high}/{total_values} " +
                   f"({100 * (clamped_low + clamped_high) / total_values:.1f}%)")
             
             if clamped_low > 0:
-                print(f"    - {clamped_low} values below 1 (will be clamped to 1)")
+                logger.info(f"    - {clamped_low} values below 1 (will be clamped to 1)")
             if clamped_high > 0:
-                print(f"    - {clamped_high} values above 63 (will be clamped to 63)")
+                logger.info(f"    - {clamped_high} values above 63 (will be clamped to 63)")
             
-            print(f"  This will cause loss of information during reconstruction.")
+            logger.info(f"  This will cause loss of information during reconstruction.")
         else:
-            print(f"  Formula produces valid scaled values (1-63 range)")
+            logger.info(f"  Formula produces valid scaled values (1-63 range)")
         
         return formula
         
     except Exception as e:
-        print(f"\nERROR: Failed to validate formula '{formula}'")
-        print(f"Error details: {e}")
-        print("\nSupported operations: +, -, *, /, ** (power), (), ln(), log(), log10(), exp(), sqrt(), abs()")
-        print("Variable 'x' represents quality scores")
+        logger.error(f"Failed to validate formula '{formula}': {e}")
         raise

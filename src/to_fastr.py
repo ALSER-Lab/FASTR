@@ -12,44 +12,57 @@ from quality_processing import(create_phred_quality_map,
                                get_scaling_equation,
                                validate_and_adjust_formula)
 from chunk_processor import process_chunk_worker, chunk_generator
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+__version__ = "1.0.0"
 
 
-def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min_quality=0,
+def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, min_quality=0,
                           quality_scaling='none', binary=True, compress_headers=False,
                           sequencer_type='none', sra_accession=None, keep_bases=False, keep_quality=False,
                           custom_formula=None, multiple_flowcells=False,
                           remove_repeating_header=False, phred_alphabet_max=41, paired_end=False,
                           paired_end_mode='same_file', chunk_size_mb=8, num_workers=4, adaptive_sample_size=10,
-                          mode=None, mode3_input_headers=None, second_head=None, safe_mode=False):
+                          mode=None, mode3_input_headers=None, second_head=None, safe_mode=False, verbose=False):
     """
-    Main processing function using streaming architecture to handle files of any size.
+    Convert FASTQ files to FASTR compressed format by encoding bases as integers and optionally compressing repetitive header metadata.
     """
     
     file_size = os.path.getsize(fastq_path)
-    print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
-    print(f"Using {num_workers} worker processes for parallel processing")
+    logger.info(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
+    logger.info(f"Using {num_workers} worker processes for parallel processing")
 
     # Are we extracting/reading headers for mode 3?
     extract_headers = (mode == 3 and mode3_input_headers is None)
     read_headers = (mode == 3 and mode3_input_headers is not None)
     if extract_headers:
         headers_output_path = output_path.rsplit('.', 1)[0] + '_headers.txt'
-        print(f"Mode 3: Extracting headers to {headers_output_path}")
+        logger.info(f"Mode 3: Extracting headers to {headers_output_path}")
+
     elif read_headers:
-        print(f"Mode 3: Reading headers from {mode3_input_headers}")
+        logger.info(f"Mode 3: Reading headers from {mode3_input_headers}")
+
     
     if compress_headers and sequencer_type != 'none':
-        print(f"Header compression enabled (sequencer type: {sequencer_type})")
+        logger.info(f"Header compression enabled (sequencer type: {sequencer_type})")
         if multiple_flowcells:
-            print("Multiple flowcell detection enabled")
+            logger.info("Multiple flowcell detection enabled")
         if remove_repeating_header:
-            print("Repeating header metadata removal enabled - only unique IDs will be stored")
+            logger.info("Repeating header metadata removal enabled - only unique IDs will be stored")
     
     if paired_end:
-        print(f"Paired-end mode enabled (output mode: {paired_end_mode})")
+        logger.info(f"Paired-end mode enabled (output mode: {paired_end_mode})")
     
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
-    print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
+    logger.info(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
     # Premake lookup table
     BYTE_LOOKUP = np.array([f'{i:03d}'.encode('ascii') for i in range(256)])
@@ -62,7 +75,7 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     flowcell_start_index = 0
     total_sequences = 0
     
-    print("Reading and processing chunks in parallel...")
+    logger.info("Reading and processing chunks in parallel...")
     
     headers_file = None
     if extract_headers:
@@ -100,7 +113,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
             adaptive_sample_size=adaptive_sample_size,
             extract_headers=extract_headers,
             mode=mode,
-            safe_mode=safe_mode
+            safe_mode=safe_mode,
+            verbose=verbose
         )
         chunk_id, first_processed_bytes, metadata, structure_template, delimiter, count, first_headers_data = worker_func_first(first_chunk_data)
         
@@ -137,7 +151,8 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 adaptive_sample_size=adaptive_sample_size,
                 extract_headers=extract_headers,
                 mode=mode,
-                safe_mode=safe_mode
+                safe_mode=safe_mode,
+                verbose=verbose
             )
             
             # Use imap to process chunks as they're read (streaming)
@@ -172,14 +187,14 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                             ))
                             current_flowcell_metadata = metadata
                             flowcell_start_index = total_sequences
-                            print(f"Flowcell change detected at sequence {total_sequences}")
+                            logger.debug(f"Flowcell change detected at sequence {total_sequences}")
                     elif current_flowcell_metadata is None:
                         current_flowcell_metadata = metadata
                 
                 total_sequences += count
                 
                 if total_sequences % 100000 == 0:
-                    print(f"Processed {total_sequences:,} sequences...")
+                    logger.info(f"Processed {total_sequences:,} sequences...")
         
         # Finalize flowcell tracking
         if multiple_flowcells and current_flowcell_metadata is not None:
@@ -200,7 +215,6 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
                 print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
         
         # Write metadata headers at the beginning
-        # Much better than reserving useless space (like we did in previous commits)!
         if sequencer_type != 'none' or mode is not None:
             metadata_lines = []
             metadata_lines.append(f"#MODE={mode}\n")
@@ -241,9 +255,9 @@ def export_scalars_to_txt(fastq_path, base_map, output_path, phred_map=None, min
     
     if extract_headers and headers_file:
         headers_file.close()
-        print(f"Headers saved to: {headers_output_path}")
+        logger.info(f"Headers saved to: {headers_output_path}")
     
-    print(f"Total sequences written: {total_sequences:,}")
+    logger.info(f"Total sequences written: {total_sequences:,}")
 
 def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure,
                              paired_end, paired_end_mode, quality_scaling,
@@ -359,7 +373,7 @@ def write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert and compress FASTQ/FASTA files to scalar format.",
+        description="Convert and compress FASTQ/FASTA files to FASTR format.",
         formatter_class=argparse.RawTextHelpFormatter
     )
 
@@ -466,25 +480,33 @@ def main():
                             help="Chunk size in MB for parallel processing [8]")
     perf_group.add_argument("--profile", type=int, default=0, metavar="INT",
                             help="Enable profiling (0/1) [0]")
+    perf_group.add_argument("--verbose", type=int, default=0, metavar="INT",
+                            help="Enable verbose logging (0/1) [0]")
 
     args = parser.parse_args()
+
+    if args.verbose == 1:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger('chunk_processor').setLevel(logging.DEBUG)
+        logging.getLogger('fastq_parser').setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
     
     
     if args.qual_scale == 'custom' and args.custom_formula is None:
-        print("ERROR: --qual_scale custom requires --custom_formula argument")
-        print("\nExample usage:")
-        print("  --qual_scale custom --custom_formula '1 + 62 * (x - 40) / 53'")
-        print("  --qual_scale custom --custom_formula 'ln(x - 39) / ln(54) * 62 + 1'")
+        logger.error("--qual_scale custom requires --custom_formula argument")
+        logger.info("Example usage:")
+        logger.info("  --qual_scale custom --custom_formula '1 + 62 * (x - 40) / 53'")
         exit(1)
     
     if args.multi_flow == 1 and args.compress_hdr == 0:
-        print("WARNING: --multi_flow requires --compress_hdr 1 to function")
-        print("Enabling header compression automatically...")
+        logger.warning("--multi_flow requires --compress_hdr 1 to function")
+        logger.info("Enabling header compression automatically...")
         args.compress_hdr = 1
     
     if args.rm_repeat_hdr == 1 and args.compress_hdr == 0:
-        print("WARNING: --rm_repeat_hdr requires --compress_hdr 1 to function")
-        print("Enabling header compression automatically...")
+        logger.warning("WARNING: --rm_repeat_hdr requires --compress_hdr 1 to function")
+        logger.info("Enabling header compression automatically...")
         args.compress_hdr = 1
 
 
@@ -530,6 +552,12 @@ def main():
     numpy_base_map[ord("C")] = args.gray_C
     numpy_base_map[ord("T")] = args.gray_T
 
+    max_base_value = max(args.gray_N, args.gray_A, args.gray_G, args.gray_C, args.gray_T)
+    if max_base_value + 62 >= 255:  # 62 is max quality scaling range, so we make sure nothing meets/exceeds our reserved val (255)
+        logger.error(f"Base encoding values too high. Maximum base value ({max_base_value}) + quality range (62) must be < 255")
+        logger.error(f"Current values: N={args.gray_N}, A={args.gray_A}, G={args.gray_G}, C={args.gray_C}, T={args.gray_T}")
+        exit(1)
+
     start_time = time.perf_counter()
 
     # Initialize profiler if requested
@@ -542,9 +570,9 @@ def main():
     # Create phred map if needed
     phred_map = create_phred_quality_map(args.phred_off, phred_alphabet_max) if args.extract_qual else None
 
-    print(f"Converting sequences from {args.input_path}...")
+    logger.info(f"Converting sequences from {args.input_path}...")
     
-    export_scalars_to_txt(
+    convert_fastq_to_fastr(
         args.input_path, numpy_base_map,
         args.output_path, phred_map, args.min_qual,
         args.qual_scale, args.bin_write,
@@ -564,13 +592,15 @@ def main():
         mode=args.mode,
         mode3_input_headers=args.mode3_headers,
         second_head=args.second_head,
-        safe_mode=(args.safe_mode == 1)
+        safe_mode=(args.safe_mode == 1),
+        verbose=(args.verbose == 1)
     )
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
-    print(f"Task completed in {elapsed_time:.4f} seconds")
-    print(f"Saved scalars to {args.output_path}")
+    logger.info(f"Conversion completed in {elapsed_time:.4f} seconds")
+    logger.info(f"Output saved to {args.output_path}")
+
     
     if profiler is not None:
         profiler.disable()

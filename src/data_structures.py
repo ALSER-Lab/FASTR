@@ -1,13 +1,14 @@
 from dataclasses import dataclass
 import numpy as np
+import numpy.typing as npt
 
 
 @dataclass
 class FASTQRecord:
     index: int
     header: bytes
-    sequence: np.ndarray
-    quality: np.ndarray
+    sequence: npt.NDArray[np.uint8]
+    quality: npt.NDArray[np.uint8]
     pair_number: int = 0
     quality_string: bytes = b''
     original_header: bytes = b''
