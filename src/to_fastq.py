@@ -304,13 +304,14 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
     """Get the delimiter character used by each sequencer type"""
     if sequencer_type == 'illumina' or sequencer_type == 'old_illumina':
         return ':'
-    elif sequencer_type.startswith('pacbio'):
+    elif sequencer_type.startswith('pacbio') and not sequencer_type.endswith('_sra'):
         return '/'
     elif sequencer_type == 'ont':
         return ':'
-    elif sequencer_type == 'srr':
-        return ':'
+    elif sequencer_type == 'sra' or sequencer_type.endswith('_sra'):
+        return ' ' 
     return ':'
+
 
 def parse_ont_unique_id(unique_id: str):
     """Parse ONT unique_id which contains key=value pairs"""
@@ -369,7 +370,6 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
             else:
                 result = ' '.join(result_parts)
         else:
-            # Normal single-delimiter reconstruction
             result = structure
             for i, part in enumerate(unique_parts, 1):
                 placeholder = f"{{REPEATING_{i}}}"
@@ -390,12 +390,76 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
             result = f"{result}/{pair_number}"
         
         return f"@{result}"
+    
+    elif sequencer_type == 'illumina_sra':
+        unique_parts_by_space = unique_id.split(' ')
+        
+        if len(unique_parts_by_space) < 2:
+            result = structure.replace('{REPEATING_1}', unique_id)
+        else:
+            spot = unique_parts_by_space[0]
+            illumina_coords = unique_parts_by_space[1]  
+            coord_parts = illumina_coords.split(':')
+            
+            result = structure.replace('{REPEATING_1}', spot)
+            
+            for i, coord_part in enumerate(coord_parts):
+                placeholder = f"{{REPEATING_{i+2}}}" 
+                result = result.replace(placeholder, coord_part, 1)
+            
+            if len(unique_parts_by_space) > 2:
+                extra_fields = ' '.join(unique_parts_by_space[2:])
+                result = result.replace('{REPEATING_5}', extra_fields, 1)
+    
+    elif sequencer_type in ['pacbio_hifi_sra', 'pacbio_clr_sra']:
+        parts_by_space = unique_id.split(' ')
+        
+        if len(parts_by_space) < 2:
+            # Fallback
+            result = structure
+            for i, part in enumerate(parts_by_space, 1):
+                result = result.replace(f"{{REPEATING_{i}}}", part, 1)
+        else:
+            spot = parts_by_space[0]
+            pacbio_path = parts_by_space[1]  
+            result = structure.replace('{REPEATING_1}', spot, 1)
+            path_parts = pacbio_path.split('/')
+            
+            if sequencer_type == 'pacbio_clr_sra' and len(path_parts) == 2:
+                hole = path_parts[0]
+                coords = path_parts[1]
+                
+                result = result.replace('{REPEATING_2}', hole, 1)
+                
+                if '_' in coords:
+                    coord_parts = coords.split('_')
+                    result = result.replace('{REPEATING_3}', coord_parts[0], 1)
+                    if len(coord_parts) > 1:
+                        result = result.replace('{REPEATING_4}', coord_parts[1], 1)
+                else:
+                    result = result.replace('{REPEATING_3}', coords, 1)
+            
+            elif sequencer_type == 'pacbio_hifi_sra':
+                if len(path_parts) >= 1:
+                    result = result.replace('{REPEATING_2}', path_parts[0], 1)
+            
+            if len(parts_by_space) > 2:
+                extra = ' '.join(parts_by_space[2:])
+                result = result.replace('{REPEATING_5}', extra, 1)  
+                result = result.replace('{REPEATING_3}', extra, 1)  
+    
+    elif sequencer_type == 'sra':
+        unique_parts = unique_id.split(' ')
+        result = structure
+        for i, part in enumerate(unique_parts, 1):
+            placeholder = f"{{REPEATING_{i}}}"
+            result = result.replace(placeholder, part, 1)
 
-    else:  # Non-adaptive sequencer types
+    else:  # Non-adaptive, non-SRA sequencer types
         delimiter = get_delimiter_for_sequencer(sequencer_type)
         
         # Special handling for PacBio formats that use underscore sub-delimiter
-        if sequencer_type in ['pacbio_clr', 'pacbio_subread', 'pacbio_clr_sra']:
+        if sequencer_type in ['pacbio_clr', 'pacbio_subread']:
             # Split by primary delimiter first
             parts = unique_id.split(delimiter)
             unique_parts = []
@@ -413,12 +477,11 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
             placeholder = f"{{REPEATING_{i}}}"
             result = result.replace(placeholder, part)
     
-    # Add pair number if present (applies to both adaptive and non-adaptive)
+    # Add pair number if present (applies to all formats)
     if pair_number > 0:
         result = f"{result}/{pair_number}"
     
     return f"@{result}"
-
 
 def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray:
     # Just copy-pasted from quality_processing.py 

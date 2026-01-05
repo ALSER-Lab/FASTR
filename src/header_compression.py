@@ -14,7 +14,7 @@ SRA_PATTERN = re.compile(r'@([A-Z]+)(\d+)\.(\d+)\s+(\d+)(?:\s+(.*))?')
 # SRA HYBRIDS
 SRA_PACBIO_HIFI_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^/]+)/(\d+)/ccs(?:\s+(.*))?')
 SRA_PACBIO_CLR_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^/]+)/(\d+)/(\d+)_(\d+)(?:\s+(.*))?')
-SRA_ILLUMINA_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)\s+([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+):(\d+)(?:\s+(.*))?')
+SRA_ILLUMINA_PATTERN = re.compile(r'@([A-Z]+\d+)\.(\d+)(?:/[12])?\s+([^:]+):([^:]+):([^:]+):(\d+):(\d+):(\d+):(\d+)(?:\s+(.*))?')
 
 def get_delimiter_for_sequencer(sequencer_type: str) -> str:
     """Get the delimiter character used by each sequencer type"""
@@ -110,6 +110,7 @@ def parse_ont_header(header: str) -> Tuple[Dict, str, str]:
     return common, unique_id, structure
 
 
+
 def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
     match = SRA_PATTERN.match(header)
     if not match:
@@ -132,16 +133,15 @@ def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}} {{REPEATING_3}}"
-        unique_id = f"{read_index}:{spot}:{extra_fields}"
+        unique_id = f"{read_index} {spot} {extra_fields}"  
     else:
         structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}}"
-        unique_id = f"{read_index}:{spot}"
+        unique_id = f"{read_index} {spot}" 
     
     if has_length:
         common['has_length'] = True
     
     return common, unique_id, structure
-
 
 def parse_old_illumina_header(header: str) -> Tuple[Dict, str, str]:
     """Parse pre-Casava 1.8 Illumina headers"""
@@ -391,10 +391,10 @@ def parse_pacbio_hifi_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs {{REPEATING_3}}"
-        unique_id = f"{spot}/{hole}/{extra_fields}"
+        unique_id = f"{spot} {hole}/ccs {extra_fields}"
     else:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/ccs"
-        unique_id = f"{spot}/{hole}"
+        unique_id = f"{spot} {hole}/ccs"
     
     if has_length:
         common['has_length'] = True
@@ -426,10 +426,10 @@ def parse_pacbio_clr_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}} {{REPEATING_5}}"
-        unique_id = f"{spot}/{hole}/{start_pos}_{end_pos}/{extra_fields}"
+        unique_id = f"{spot} {hole}/{start_pos}_{end_pos} {extra_fields}"
     else:
         structure = f"{accession}.{{REPEATING_1}} {movie}/{{REPEATING_2}}/{{REPEATING_3}}_{{REPEATING_4}}"
-        unique_id = f"{spot}/{hole}/{start_pos}_{end_pos}"
+        unique_id = f"{spot} {hole}/{start_pos}_{end_pos}"
     
     if has_length:
         common['has_length'] = True
@@ -453,7 +453,9 @@ def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     structure = f"{accession}.{{REPEATING_1}}"
     
-    unique_id = ' '.join(filtered_parts[1:])
+    read_index = sra_acc.split('.')[1] if '.' in sra_acc else sra_acc
+    
+    unique_id = f"{read_index} {' '.join(filtered_parts[1:])}"
     
     return common, unique_id, structure
 
@@ -479,15 +481,16 @@ def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}} {{REPEATING_3}}"
-        unique_id = f"{read_index}:{spot}:{extra_fields}"
+        unique_id = f"{read_index} {spot} {extra_fields}"
     else:
         structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}}"
-        unique_id = f"{read_index}:{spot}"
+        unique_id = f"{read_index} {spot}" 
     
     if has_length:
         common['has_length'] = True
     
     return common, unique_id, structure
+
 
 def parse_illumina_sra_header(header: str) -> Tuple[Dict, str, str]:
     match = SRA_ILLUMINA_PATTERN.match(header)
@@ -522,10 +525,10 @@ def parse_illumina_sra_header(header: str) -> Tuple[Dict, str, str]:
     
     if extra_fields:
         structure = f"{accession}.{{REPEATING_1}} {instrument}:{run_id}:{flowcell}:{lane}:{{REPEATING_2}}:{{REPEATING_3}}:{{REPEATING_4}} {{REPEATING_5}}"
-        unique_id = f"{spot}:{tile}:{x_pos}:{y_pos}:{extra_fields}"
+        unique_id = f"{spot} {tile}:{x_pos}:{y_pos} {extra_fields}"
     else:
         structure = f"{accession}.{{REPEATING_1}} {instrument}:{run_id}:{flowcell}:{lane}:{{REPEATING_2}}:{{REPEATING_3}}:{{REPEATING_4}}"
-        unique_id = f"{spot}:{tile}:{x_pos}:{y_pos}"
+        unique_id = f"{spot} {tile}:{x_pos}:{y_pos}" 
     
     if has_length:
         common['has_length'] = True
