@@ -13,6 +13,17 @@ import cProfile
 import pstats
 from io import StringIO
 from numba import njit
+import traceback
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+__version__ = "1.0.0"
 
 @dataclass
 class MetadataBlock:
@@ -70,16 +81,16 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             header_section = data[:first_header].decode('utf-8', errors='ignore')
             lines = [line.strip() for line in header_section.split('\n') if line.strip()]
             
-            print(f"Parsed {len(lines)} header lines")
-            for i, line in enumerate(lines[:5]):  # Show first 5 lines
-                print(f"  Line {i}: {line[:80]}")
+            logger.info(f"Parsed {len(lines)} header lines")
+            for i, line in enumerate(lines[:5]): 
+                logger.info(f"  Line {i}: {line[:80]}")
             
             line_idx = 0
             
             # Check for SRA accession
             if lines and lines[0].startswith('#') and '=' not in lines[0]:
                 sra_accession = lines[0][1:]
-                print(f"Found SRA accession: {sra_accession}")
+                logger.info(f"Found SRA accession: {sra_accession}")
                 line_idx = 1
             
             # Process metadata lines
@@ -91,7 +102,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                 line = lines[line_idx]
                 
                 if line.startswith('@'):
-                    print(f"Reached sequence headers at line {line_idx}")
+                    logger.info(f"Reached sequence headers at line {line_idx}")
                     break
                 
                 if line.startswith('<'):
@@ -112,7 +123,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     if phred_str.startswith('PHRED_'):
                         try:
                             phred_alphabet_from_metadata = int(phred_str.split('_')[1]) - 1
-                            print(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
+                            logger.info(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
                         except:
                             pass
                     line_idx += 1
@@ -122,7 +133,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     length_str = line.split('=', 1)[1].strip()
                     if length_str.lower() == 'y':
                         length_flag = True
-                        print(f"Found LENGTH flag: {length_flag}")
+                        logger.info(f"Found LENGTH flag: {length_flag}")
                     line_idx += 1
                     continue
 
@@ -130,7 +141,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     second_head_str = line.split('=', 1)[1].strip()
                     if second_head_str.lower() == 'y':
                         second_head_flag = True
-                        print(f"Found SECOND_HEAD flag: {second_head_flag}")
+                        logger.info(f"Found SECOND_HEAD flag: {second_head_flag}")
                     line_idx += 1
                     continue
                 
@@ -138,7 +149,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                     safe_mode_str = line.split('=', 1)[1].strip()
                     if safe_mode_str.lower() == 'y':
                         safe_mode_flag = True
-                        print(f"Found SAFE_MODE flag: {second_head_flag}")
+                        logger.info(f"Found SAFE_MODE flag: {second_head_flag}")
                     line_idx += 1
                     continue
 
@@ -148,13 +159,13 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                         current_structure = line.split('=', 1)[1].strip()
                     else:
                         current_structure = line.split(':', 1)[1].strip()
-                    print(f"Found STRUCTURE metadata: {current_structure}")
+                    logger.info(f"Found STRUCTURE metadata: {current_structure}")
                     line_idx += 1
                     continue
                 
                 if line.startswith('#QUAL_SCALE='):
                     current_qual_scale = line.split('=', 1)[1].strip()
-                    print(f"Found equation: {current_qual_scale}")
+                    logger.info(f"Found equation: {current_qual_scale}")
                     
                     if current_seq_type and current_qual_scale:
                         metadata_blocks.append(MetadataBlock(
@@ -196,16 +207,16 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
     header_section = data[:actual_data_start].decode('utf-8', errors='ignore')
     lines = [line.strip() for line in header_section.split('\n') if line.strip()]
     
-    print(f"Parsed {len(lines)} header lines")
+    logger.info(f"Parsed {len(lines)} header lines")
     for i, line in enumerate(lines[:5]):  # Show first 5 lines
-        print(f"  Line {i}: {line[:80]}")
+        logger.info(f"  Line {i}: {line[:80]}")
     
     line_idx = 0
     
     # Check for SRA accession
     if lines and lines[0].startswith('#') and '=' not in lines[0]:
         sra_accession = lines[0][1:]
-        print(f"Found SRA accession: {sra_accession}")
+        logger.info(f"Found SRA accession: {sra_accession}")
         line_idx = 1
     
     # Process metadata lines
@@ -215,14 +226,6 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
 
     while line_idx < len(lines):
         line = lines[line_idx]
-        
-        if line.startswith('@') and not line.startswith('#RANGE:'):
-            test_content = line[1:]
-            if re.match(r'^\d+[:/]\d+$', test_content):
-                print(f"Detected sequence header at line {line_idx}: {line}")
-                break
-            print(f"WARNING: Found @ line that's not #RANGE: {line}")
-            break
         
         if line.startswith('<'):
             break
@@ -242,7 +245,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             if phred_str.startswith('PHRED_'):
                 try:
                     phred_alphabet_from_metadata = int(phred_str.split('_')[1]) - 1
-                    print(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
+                    logger.info(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
                 except:
                     pass
             line_idx += 1
@@ -252,7 +255,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             length_str = line.split('=', 1)[1].strip()
             if length_str.lower() == 'y':
                 length_flag = True
-                print(f"Found LENGTH flag: {length_flag}")
+                logger.info(f"Found LENGTH flag: {length_flag}")
             line_idx += 1
             continue
 
@@ -260,7 +263,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             second_head_str = line.split('=', 1)[1].strip()
             if second_head_str.lower() == 'y':
                 second_head_flag = True
-                print(f"Found SECOND_HEAD flag: {second_head_flag}")
+                logger.info(f"Found SECOND_HEAD flag: {second_head_flag}")
             line_idx += 1
             continue
 
@@ -268,7 +271,7 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
             safe_mode_str = line.split('=', 1)[1].strip()
             if safe_mode_str.lower() == 'y':
                 safe_mode_flag = True
-                print(f"Found SAFE_MODE flag: {second_head_flag}")
+                logger.info(f"Found SAFE_MODE flag: {second_head_flag}")
             line_idx += 1
             continue
         
@@ -277,13 +280,13 @@ def parse_metadata_header(data: bytes, mode: int) -> Tuple[List[MetadataBlock], 
                 current_structure = line.split('=', 1)[1].strip()
             else:
                 current_structure = line.split(':', 1)[1].strip()
-            print(f"Found STRUCTURE metadata: {current_structure}")
+            logger.info(f"Found STRUCTURE metadata: {current_structure}")
             line_idx += 1
             continue
         
         if line.startswith('#QUAL_SCALE='):
             current_qual_scale = line.split('=', 1)[1].strip()
-            print(f"Found equation: {current_qual_scale}")
+            logger.info(f"Found equation: {current_qual_scale}")
             line_idx += 1
             continue
         
@@ -483,50 +486,6 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
     
     return f"@{result}"
 
-def parse_custom_formula(formula: str, quality_scores: np.ndarray) -> np.ndarray:
-    # Just copy-pasted from quality_processing.py 
-    """
-    Parse and evaluate a custom mathematical formula.
-    Supports: +, -, *, /, **, (), ln(), log(), log10(), exp(), sqrt(), abs(), min(), max()
-    Variable 'x' represents quality scores
-    
-    Example formulas are:
-      "1 + 62 * (x - 40) / 53" - Linear
-      "ln(x) * 10" - Weird
-      "x ** 2 / 100" - Weird again
-      "1 + 62 * (ln(x - 39) / ln(54))" - Log
-    """
-    # Remove f(x)= prefix if present
-    formula = re.sub(r'^\s*f\s*\(\s*x\s*\)\s*=\s*', '', formula.strip())
-    
-    # Create safe namespace w/ numpy functions
-    safe_dict = {'x': quality_scores, 'ln': np.log, 'log': np.log, 'log10': np.log10, 'exp': np.exp,
-        'sqrt': np.sqrt, 'abs': np.abs, 'min': np.minimum, 'max': np.maximum, 'np': np, '__builtins__': {}}
-    
-    try:
-        # Replace common math notation
-        formula = formula.replace('^', '**')
-        
-        # Eval formula
-        with np.errstate(divide='ignore', invalid='ignore'):
-            result = eval(formula, safe_dict)
-        
-        # Handle scalar results (broadcast to array)
-        if np.isscalar(result):
-            result = np.full_like(quality_scores, result, dtype=np.float32)
-        
-        return result.astype(np.float32)
-    
-    except Exception as e:
-        print(f"ERROR: Failed to parse custom formula '{formula}'")
-        print(f"Error details: {e}")
-        print("\nSupported operations: +, -, *, /, ** (power), (), ln(), log(), log10(), exp(), sqrt(), abs()")
-        print("Variable 'x' represents quality scores")
-        print("\nExample formulas:")
-        print("  '1 + 62 * (x - 40) / 53'")
-        print("  'ln(x - 39) / ln(54) * 62 + 1'")
-        print("  'x ** 2 / 100'")
-        raise
 
 def build_formula_func(formula: str):
     """Return a function f(x) that applies the custom formula."""
@@ -640,7 +599,7 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 
 
 def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subtract_table, 
-                                       base_ranges, metadata_blocks, inverse_tables, 
+                                       metadata_blocks, inverse_tables, 
                                        phred_alphabet_max, phred_offset, sra_accession,
                                        mode, length_flag=False, headers_file_path=None, second_head_flag=False, safe_mode_flag=False, data_start_byte=None):
     """
@@ -656,7 +615,6 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
             with open(headers_file_path, 'rb') as hf:
                 headers_mmap = mmap.mmap(hf.fileno(), 0, access=mmap.ACCESS_READ)
                 # Build line offset index for this chunk's range only
-                # This is MUCH faster than splitting the entire file!!
                 headers_offsets = []
                 pos = 0
                 line_idx = 0
@@ -1416,8 +1374,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 return temp.name, sequences_in_chunk
 
     except Exception as e:
-        print(f"ERROR in worker processing chunk {chunk_id}: {e}")
-        import traceback
+        logger.warning(f"ERROR in worker processing chunk {chunk_id}: {e}")
         traceback.print_exc()
         raise
 
@@ -1426,63 +1383,63 @@ def reconstruct_fastq(input_path: str, output_path: str,
                      gray_N: int = 0, gray_A: int = 3, gray_G: int = 66,
                      gray_C: int = 129, gray_T: int = 192, phred_alphabet_max: int = None,
                      phred_offset: int = 33, chunk_size_mb: int = 8, num_workers: int = 4,
-                     mode: int = 2, mode3_headers_file: str = None):
+                     mode: int = 2, mode3_headers_file: str = None, verbose: bool=False):
     """
     Reconstruct FASTQ file from FASTR using parallel processing.
     """
-    print(f"Reading FASTR: {input_path}")
-    print(f"Reconstruction mode: {mode}")
+    logger.info(f"Reading FASTR: {input_path}")
+    logger.info(f"Reconstruction mode: {mode}")
     
     # For mode 3, validate headers file exists but don't load it..
     # Workers will load it themselves to avoid pickle overhead
     if mode == 3 and mode3_headers_file:
         if not os.path.exists(mode3_headers_file):
             raise FileNotFoundError(f"Headers file not found: {mode3_headers_file}")
-        print(f"Headers file: {mode3_headers_file} (will be loaded by workers)")
+        logger.info(f"Headers file: {mode3_headers_file} (will be loaded by workers)")
         # Quick check of header count
         with open(mode3_headers_file, 'rb') as hf:
             header_count = sum(1 for _ in hf)
-        print(f"Headers file contains {header_count:,} headers")
+        logger.info(f"Headers file contains {header_count:,} headers")
     elif mode == 3 and not mode3_headers_file:
-        print("WARNING: Mode 3 requires --headers_file argument")
-        print("Proceeding without headers - will use fallback header generation (currently: '@seq')")
+        logger.warning("WARNING: Mode 3 requires --headers_file argument")
+        logger.info("Proceeding without headers - will use fallback header generation (currently: '@seq')")
     
     with open(input_path, 'rb') as f:
         data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     file_size = len(data)
-    print(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
-    print(f"Using {num_workers} worker processes for parallel reconstruction")
+    logger.info(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
+    logger.info(f"Using {num_workers} worker processes for parallel reconstruction")
     
     metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag, second_head_flag, safe_mode_flag = parse_metadata_header(data, mode)
 
     if detected_mode is not None:
         mode = detected_mode
-        print(f"Detected mode from metadata: {mode}")
+        logger.info(f"Detected mode from metadata: {mode}")
     
-    print(f"Reconstruction mode: {mode}")
+    logger.info(f"Reconstruction mode: {mode}")
     
     if phred_alphabet_max is None:
         if phred_from_metadata is not None:
             phred_alphabet_max = phred_from_metadata
-            print(f"Using PHRED alphabet from metadata: {phred_alphabet_max}")
+            logger.info(f"Using PHRED alphabet from metadata: {phred_alphabet_max}")
         else:
             phred_alphabet_max = 41
-            print(f"No PHRED alphabet found in metadata, using default: {phred_alphabet_max}")
+            logger.info(f"No PHRED alphabet found in metadata, using default: {phred_alphabet_max}")
     else:
-        print(f"Using user-specified PHRED alphabet (overriding metadata): {phred_alphabet_max}")
+        logger.info(f"Using user-specified PHRED alphabet (overriding metadata): {phred_alphabet_max}")
     
     if mode in [0, 2] and not metadata_blocks:
-        print("WARNING: No metadata found for header reconstruction")
+        logger.warning("WARNING: No metadata found for header reconstruction")
     
     if metadata_blocks:
-        print(f"Found {len(metadata_blocks)} metadata block(s)")
+        logger.info(f"Found {len(metadata_blocks)} metadata block(s)")
         for i, mb in enumerate(metadata_blocks):
-            print(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
+            logger.info(f"  Block {i+1}: {mb.sequencer_type}, equation: {mb.scaling_equation}")
             if mb.structure_template:
-                print(f"           structure: {mb.structure_template}")
+                logger.info(f"           structure: {mb.structure_template}")
     
     if sra_accession:
-        print(f"SRA Accession: {sra_accession}")
+        logger.info(f"SRA Accession: {sra_accession}")
     
     reverse_map = reverse_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
     subtract_table = create_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
@@ -1505,16 +1462,8 @@ def reconstruct_fastq(input_path: str, output_path: str,
             # Mode 1 without metadata, so we'll create default inverse table
             inverse_tables.append(np.arange(64, dtype=int))
     
-    base_ranges = {
-        'A': (3, 65),
-        'C': (66, 128),
-        'G': (129, 191),
-        'T': (192, 254),
-        'N': (0, 2)
-    }
-    
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
-    print(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
+    logger.info(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
     def chunk_generator():
         buffer_start = data_start_byte
@@ -1595,36 +1544,37 @@ def reconstruct_fastq(input_path: str, output_path: str,
                     estimated_seqs = chunk_view.count(b'\n@')
                     if chunk_view.startswith(b'@'):
                         estimated_seqs += 1
+                if verbose:
+                    logger.info(f"Yielding chunk {chunk_id}: {abs_start}-{abs_end} ({abs_end-abs_start} bytes, ~{estimated_seqs} seqs)")
                 
                 yield (chunk_id, abs_start, abs_end, start_seq_idx)
                 
                 start_seq_idx += estimated_seqs
                 chunk_id += 1
                 if chunk_id % 10 == 0:
-                    print(f"Read {chunk_id} chunks...")
+                    logger.info(f"Read {chunk_id} chunks...")
             
             pos = chunk_end
             if pos >= buffer_len:
                 break
 
-    print("Reconstructing FASTQ with parallel processing...")
+    logger.info("Reconstructing FASTQ with parallel processing...")
     total_sequences = 0
     
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         with Pool(processes=num_workers) as pool:
-            worker_func = partial( # Redid argument order as it was causing some np arrays to be pickled instead of metadata objects
+            worker_func = partial( 
                 process_chunk_worker_reconstruction,
                 mmap_path=input_path,        
                 reverse_map=reverse_map,       
                 subtract_table=subtract_table,  
-                base_ranges=base_ranges,     
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
                 phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 sra_accession=sra_accession,
                 mode=mode,
-                headers_file_path=mode3_headers_file,  # Pass file path instead of list
+                headers_file_path=mode3_headers_file,
                 data_start_byte=data_start_byte,
                 length_flag=length_flag,
                 second_head_flag=second_head_flag,
@@ -1636,7 +1586,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 temp_files.append(temp_path)
                 total_sequences += count
                 if total_sequences % 100000 == 0:
-                    print(f"Reconstructed {total_sequences:,} sequences...")
+                    logger.info(f"Reconstructed {total_sequences:,} sequences...")
         
         # Merge temp files into the final output and clean up
         for temp_path in temp_files:
@@ -1645,44 +1595,76 @@ def reconstruct_fastq(input_path: str, output_path: str,
             os.remove(temp_path)
 
     
-    print(f"\nTotal sequences reconstructed: {total_sequences:,}")
-    print(f"Output saved to: {output_path}")
+    logger.info(f"\nTotal sequences reconstructed: {total_sequences:,}")
+    logger.info(f"Output saved to: {output_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Reconstruct FASTQ files from FASTR format")
-    parser.add_argument("input_path", type=str, help="Path to FASTR file")
-    parser.add_argument("output_path", type=str, help="Output FASTQ file path")
-    
-    # Mode selection
-    parser.add_argument("--mode", type=int, default=2, choices=[0, 1, 2, 3],
-                        help="Conversion mode: 0=headers only, 1=bases only, 2=both, 3=no repeating headers (default: 2)")
-    parser.add_argument("--headers_file", type=str, default=None,
-                        help="Path to headers file for mode 3 reconstruction")
-    
-    
-    # Quality parameters
-    parser.add_argument("--phred_offset", type=int, default=33,
-                        help="Phred quality offset for output (default: 33)")
-    parser.add_argument("--phred_alphabet", type=str, default=None,
-                        help="Phred alphabet override (phred42/phred63/phred94), defaults to metadata value")
-    parser.add_argument("--profile", action="store_true",
-                        help="Enable cProfile profiling")
-    
-    # Base mapping
-    parser.add_argument("--gray_N", type=int, default=0)
-    parser.add_argument("--gray_A", type=int, default=3)
-    parser.add_argument("--gray_C", type=int, default=129)
-    parser.add_argument("--gray_G", type=int, default=66)
-    parser.add_argument("--gray_T", type=int, default=192)
-    
-    # Multiprocessing
-    parser.add_argument("--chunk_size_mb", type=int, default=8,
-                        help="Chunk size in MB for parallel processing (default: 8)")
-    parser.add_argument("--num_workers", type=int, default=4,
-                        help="Number of parallel workers (default: 4)")
-    
+    parser = argparse.ArgumentParser(
+        description="Reconstruct FASTQ files from FASTR.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+
+    # Positional Arguments
+    parser.add_argument("input_path",
+                        metavar="FILE",
+                        help="Path to FASTR compressed file")
+    parser.add_argument("output_path", 
+                        metavar="FILE",
+                        help="Output FASTQ file path")
+
+    # Mode Group
+    mode_group = parser.add_argument_group("RECONSTRUCTION MODE")
+    mode_group.add_argument("--mode", type=int, metavar="INT", default=2,
+                            choices=[0, 1, 2, 3],
+                            help="Reconstruction mode [2]\n"
+                                 "0: Headers only (no base conversion)\n"
+                                 "1: Bases only (keep original headers)\n"
+                                 "2: Full reconstruction (headers + bases)\n"
+                                 "3: No repeating headers (requires --headers_file)")
+    mode_group.add_argument("--headers_file", type=str, metavar="FILE", default=None,
+                            help="Path to headers file for mode 3 reconstruction [null]")
+
+    # Quality Parameters Group
+    quality_group = parser.add_argument_group("QUALITY RECONSTRUCTION")
+    quality_group.add_argument("--phred_offset", type=int, metavar="INT", default=33,
+                               help="Phred quality offset for output [33]")
+    quality_group.add_argument("--phred_alphabet", type=str, metavar="STR", default=None,
+                               choices=['phred42', 'phred63', 'phred94'],
+                               help="Override phred alphabet from metadata (phred42/phred63/phred94) [auto]")
+
+    # Base Mapping Group
+    gray_group = parser.add_argument_group("GRAYSCALE DECODING")
+    gray_group.add_argument("--gray_N", type=int, metavar="INT", default=0,
+                            help="Grayscale value for N [0]")
+    gray_group.add_argument("--gray_A", type=int, metavar="INT", default=3,
+                            help="Grayscale value for A [3]")
+    gray_group.add_argument("--gray_G", type=int, metavar="INT", default=66,
+                            help="Grayscale value for G [66]")
+    gray_group.add_argument("--gray_C", type=int, metavar="INT", default=129,
+                            help="Grayscale value for C [129]")
+    gray_group.add_argument("--gray_T", type=int, metavar="INT", default=192,
+                            help="Grayscale value for T [192]")
+
+    # Performance Group
+    perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
+    perf_group.add_argument("--chunk_size_mb", type=int, metavar="INT", default=8,
+                            help="Chunk size in MB for parallel processing [8]")
+    perf_group.add_argument("--num_workers", type=int, metavar="INT", default=4,
+                            help="Number of parallel workers [4]")
+    perf_group.add_argument("--verbose", type=int, metavar="INT", default=0,
+                            choices=[0, 1],
+                            help="Enable verbose logging (0/1) [0]")
+    perf_group.add_argument("--profile", type=int, metavar="INT", default=0,
+                            choices=[0, 1],
+                            help="Enable cProfile profiling (0/1) [0]")
+
     args = parser.parse_args()
+
+    if args.verbose == 1:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
     
     phred_alphabet_max = None
     if args.phred_alphabet:
@@ -1695,9 +1677,10 @@ def main():
     
     start_time = time.perf_counter()
 
-    if args.profile:
+    if args.profile == 1:
         profiler = cProfile.Profile()
         profiler.enable()
+        logger.info("Profiling enabled...")
     
     reconstruct_fastq(
         args.input_path, args.output_path,
@@ -1710,16 +1693,20 @@ def main():
         num_workers=args.num_workers,
         mode=args.mode,
         mode3_headers_file=args.headers_file,
+        verbose=(args.verbose == 1)
     )
-    if args.profile:
+    if args.profile == 1:
         profiler.disable()
         s = StringIO()
         ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-        ps.print_stats(20) # Limit output so it doesnt take up all space in terminal
+        ps.print_stats(20)
+        print("\n" + "="*80)
+        print("Profiling Results:")
+        print("="*80)
         print(s.getvalue())
     
     end_time = time.perf_counter()
-    print(f"\nReconstruction completed in {end_time - start_time:.4f} seconds")
+    logger.info(f"\nReconstruction completed in {end_time - start_time:.4f} seconds")
 
 
 if __name__ == "__main__":

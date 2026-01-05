@@ -2,7 +2,8 @@ import numpy as np
 from typing import List, Optional
 from data_structures import FASTQRecord
 from quality_processing import apply_quality_to_bases
-
+import logging
+logger = logging.getLogger(__name__)
 
 # Reserved sequence start marker as val of 255
 SEQUENCE_START_MARKER = np.uint8(255)
@@ -59,9 +60,11 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
     for idx, record in enumerate(records):
         seq_data = processed_seqs[idx]
         
-        if not keep_bases and np.any(seq_data == 255): # Don't want to write out 255
-             # This should never happen with proper base mapping, but safety check yk
-            print(f"WARNING: Sequence {idx} contains value 255, clamping to 254")
+        if not keep_bases and np.any(seq_data >= 255):
+            logger.warning(
+                f"Sequence {idx} contains reserved value 255 (likely from custom base ranges). "
+                f"Clamping to 254. Check your --gray_* arguments to avoid data loss."
+            )
             seq_data = np.clip(seq_data, 0, 254)
         
         # Write headers to separate file if headers_buffer provided (Mode 3)

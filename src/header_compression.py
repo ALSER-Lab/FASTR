@@ -26,7 +26,8 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
         return ':'
     elif sequencer_type == 'sra':
         return '.'
-    return ':'
+    
+    return ':' # Default
 
 
 def parse_illumina_header(header: str) -> Tuple[Dict, str, str]:
@@ -194,7 +195,7 @@ def analyze_headers_for_pattern(headers: List[str], sample_size: int = 100) -> T
     sample = headers[:min(sample_size, len(headers))]
     delimiter = detect_delimiter(sample)
     
-    split_headers = [h.split(delimiter) for h in sample] # Split all headers by delimiter
+    split_headers = [h.split(delimiter) for h in sample] 
     
     secondary_delimiter = None
     if delimiter == ' ' and len(split_headers[0]) > 0 and all('.' in h[0] for h in split_headers[:min(5, len(split_headers))]):
@@ -232,7 +233,7 @@ def analyze_headers_for_pattern(headers: List[str], sample_size: int = 100) -> T
             structure_parts.append(field_info['most_common'])
         else:
             
-            structure_parts.append(f"{{REPEATING_{repeating_counter}}}") # REPEATING placeholder creatin
+            structure_parts.append(f"{{REPEATING_{repeating_counter}}}") 
             repeating_counter += 1
     
     if secondary_delimiter:
@@ -458,39 +459,6 @@ def parse_ont_sra_header(header: str) -> Tuple[Dict, str, str]:
     unique_id = f"{read_index} {' '.join(filtered_parts[1:])}"
     
     return common, unique_id, structure
-
-def parse_sra_header(header: str) -> Tuple[Dict, str, str]:
-    match = SRA_PATTERN.match(header)
-    if not match:
-        return {}, header, ""
-    
-    prefix = match.group(1)
-    accession_num = match.group(2)
-    read_index = match.group(3)
-    spot = match.group(4)
-    extra_fields = match.group(5) if len(match.groups()) >= 5 and match.group(5) else ''
-    
-    common = {'prefix': prefix, 'accession': accession_num}
-    
-    has_length = 'length=' in extra_fields.lower() if extra_fields else False
-    
-    if extra_fields and has_length:
-        fields = extra_fields.split()
-        filtered_fields = [f for f in fields if not f.lower().startswith('length=')]
-        extra_fields = ' '.join(filtered_fields) if filtered_fields else ''
-    
-    if extra_fields:
-        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}} {{REPEATING_3}}"
-        unique_id = f"{read_index} {spot} {extra_fields}"
-    else:
-        structure = f"{prefix}{accession_num}.{{REPEATING_1}} {{REPEATING_2}}"
-        unique_id = f"{read_index} {spot}" 
-    
-    if has_length:
-        common['has_length'] = True
-    
-    return common, unique_id, structure
-
 
 def parse_illumina_sra_header(header: str) -> Tuple[Dict, str, str]:
     match = SRA_ILLUMINA_PATTERN.match(header)
