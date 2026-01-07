@@ -469,8 +469,8 @@ def main():
                               help="Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
     output_group.add_argument("--second_head", type=int, default=0, metavar="INT",
                               help="Repeat the header on the '+' line in the FASTQ output.")
-    output_group.add_argument("--safe_mode", type=int, default=0, metavar="INT",
-                              help="Enable safe mode for modes 1 and 2 (adds 255 marker after headers) (0/1) [0]")
+    output_group.add_argument("--safe_mode", type=int, default=1, metavar="INT",
+                              help="Enable safe mode for modes 1 and 2 (adds 255 marker after headers) (0/1) [1]")
 
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")

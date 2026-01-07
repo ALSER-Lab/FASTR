@@ -73,6 +73,14 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
             # For mode 3 we write 255 before bases
             if binary:
                 outfile.write(bytes([SEQUENCE_START_MARKER]))
+
+        if mode == 0:
+            if not remove_repeating_header:
+                header_bytes = record.header
+                if header_bytes.endswith(b'\n'):
+                    header_bytes = header_bytes[:-1]
+                outfile.write(header_bytes)
+                outfile.write(b'\n')
         
         # Mode 2 and mode 1 we write 255 after header
         elif mode in [1, 2]:
