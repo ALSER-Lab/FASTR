@@ -21,16 +21,47 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
     structure_template = adaptive_structure
     delimiter = adaptive_delimiter
     lines = buffer.split(b'\n')
-    
+
     if lines and lines[-1] == b'':
         lines = lines[:-1]
-    
-    num_complete_records = len(lines) // 4 # Check that line count divisible by 4
-    
+
+    record_boundaries = [] 
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith(b'@'):
+            header_idx = i
+            i += 1
+            seq_start_idx = i
+            
+            while i < len(lines) and not lines[i].startswith(b'+'):
+                i += 1
+            
+            if i >= len(lines):
+                break  # Incomplete record
+            
+            plus_idx = i
+            i += 1
+            qual_start_idx = i
+            seq_length = sum(len(lines[j]) for j in range(seq_start_idx, plus_idx))
+            qual_length = 0
+            while i < len(lines) and qual_length < seq_length:
+                qual_length += len(lines[i])
+                i += 1
+            
+            if qual_length >= seq_length:
+                record_boundaries.append((header_idx, seq_start_idx, plus_idx, qual_start_idx, i))
+            else:
+                break  # Incomplete record
+        else:
+            i += 1
+
+    num_complete_records = len(record_boundaries)
+
     if num_complete_records == 0:
         return records, buffer, current_flowcell_metadata, structure_template, delimiter, 0
-    
-    leftover = b'\n'.join(lines[num_complete_records * 4:])
+
+    leftover_start = record_boundaries[-1][-1] if record_boundaries else 0
+    leftover = b'\n'.join(lines[leftover_start:])
     
     # If using adaptive mode and we don't have a structure yet, analyze headers first
     if compress_headers and sequencer_type == 'adaptive' and structure_template is None:
@@ -57,17 +88,22 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
         batch_end = min(batch_start + BATCH_SIZE, num_complete_records)
         batch_size = batch_end - batch_start
         
-        line_start = batch_start * 4
-        line_end = batch_end * 4
+        header_strs = []
+        seq_data_list = []
+        qual_data_list = []
         
-        batch_lines = lines[line_start:line_end]
+        for rec_idx in range(batch_start, batch_end):
+            header_idx, seq_start_idx, plus_idx, qual_start_idx, qual_end_idx = record_boundaries[rec_idx]
+            
+            header_strs.append(lines[header_idx].decode('utf-8', errors='ignore'))
+            
+            seq_lines = [lines[j].replace(b'\r', b'') for j in range(seq_start_idx, plus_idx)] # Join sequences that may be multi line
+            seq_data_list.append(b''.join(seq_lines))
+            
+            
+            qual_lines = [lines[j].replace(b'\r', b'') for j in range(qual_start_idx, qual_end_idx)] # Join quality that may be multi line
+            qual_data_list.append(b''.join(qual_lines))
         
-        # Vectorized operations on this batch
-        header_strs = [batch_lines[i].decode('utf-8', errors='ignore') for i in range(0, len(batch_lines), 4)]
-        seq_data_list = [batch_lines[i].replace(b'\r', b'') for i in range(1, len(batch_lines), 4)]
-        qual_data_list = [batch_lines[i].replace(b'\r', b'') for i in range(3, len(batch_lines), 4)]
-        
-        # Concatenate and convert ONCE for entire batch (major speedup)
         seq_lengths = [len(s) for s in seq_data_list]
         all_seq_bytes = b''.join(seq_data_list)
         all_seq_array = np.frombuffer(all_seq_bytes, dtype=np.uint8)
@@ -97,18 +133,22 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             record_index = start_index + batch_start + idx
             header_str = header_strs[idx]
             
-            # Fast path: skip pair detection if not needed
             pair_number = 0
             if paired_end:
-                # Inline detection (avoids function call)
-                if '/1' in header_str or '_1' in header_str:
+                if header_str.endswith('/1') or header_str.endswith('_1'):
                     pair_number = 1
-                elif '/2' in header_str or '_2' in header_str:
+                elif header_str.endswith('/2') or header_str.endswith('_2'):
                     pair_number = 2
+                elif ' ' in header_str: # Illumina uses a space
+                    last_part = header_str.split(' ')[-1]
+                    if last_part.startswith('1:'):
+                        pair_number = 1
+                    elif last_part.startswith('2:'):
+                        pair_number = 2
             
             
-            original_header = batch_lines[idx * 4] + b'\n' # Store original header BEFORE compression
-            # Basically in mode 3 we were initially storing the compressed headers instead of the "raw" ones
+            header_idx_in_rec = record_boundaries[batch_start + idx][0]
+            original_header = lines[header_idx_in_rec] + b'\n'
             
             # Header compression
             if compress_headers and sequencer_type != 'none':
