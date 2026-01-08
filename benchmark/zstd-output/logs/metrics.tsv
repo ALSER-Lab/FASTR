@@ -1,3 +1,0 @@
-tool	run_id	threads_requested	thread_flag_compress	thread_flag_decompress	mt_compress	mt_decompress	compression_time_s	compressed_size_mb	compression_ratio	peak_mem_compress_mb	decompression_time_s	decompressed_size_mb	peak_mem_decompress_mb	input_matches_decompressed
-zstd	20251229_115945	32	-T	-T	1	1	0.070000	9.870	2.406080	39.078	0.070000	23.749	5.074	1
-zstd	20251229_120126	32	-T	-T	1	1	44.840000	6.292	3.774491	115.105	0.160000	23.749	12.613	1
