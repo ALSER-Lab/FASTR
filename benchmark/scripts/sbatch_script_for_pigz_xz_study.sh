@@ -1,18 +1,97 @@
 #!/bin/bash
-# Usage: ./launch_benchmark.sh /path/to/input.fastq /path/to/output_dir
+#===============================================================================
+# FASTQ Compression Benchmark Script
+#===============================================================================
+#
+# DESCRIPTION:
+#   Benchmarks compression and decompression performance of pigz (parallel gzip)
+#   and xz on FASTQ files using a SLURM HPC cluster. Compares speed, compression
+#   ratio, and resource usage across different compression levels.
+#
+# COMPRESSION TOOLS TESTED:
+#   - pigz -1  (fast)    : Fastest gzip, lowest compression
+#   - pigz -9  (best)    : Best gzip compression, slower
+#   - pigz -11 (zopfli)  : Maximum compression using Zopfli algorithm (very slow)
+#   - xz -1    (fast)    : Fast LZMA compression
+#   - xz -9    (best)    : Best LZMA compression (slow but smallest files)
+#
+# WORKFLOW:
+#   1. Submits 5 compression jobs in parallel
+#   2. Each decompression job waits for its corresponding compression to finish
+#   3. All jobs use /usr/bin/time -v to capture detailed resource metrics
+#
+# OUTPUT FILES:
+#   Compressed files:
+#     - <basename>.pigz_fast.gz      (pigz -1)
+#     - <basename>.pigz_best.gz      (pigz -9)
+#     - <basename>.pigz_zopfli.gz    (pigz -11)
+#     - <basename>.xz_fast.xz        (xz -1)
+#     - <basename>.xz_best.xz        (xz -9)
+#
+#   Decompressed files:
+#     - <basename>.<method>.decompressed.fastq
+#
+#   Log files (contain timing and memory stats):
+#     - <method>_compress_<jobid>.out/.err
+#     - <method>_decompress_<jobid>.out/.err
+#
+# SLURM SETTINGS:
+#   - Partition: qDEV
+#   - CPUs: 64 threads per job
+#   - Time limit: 11 hours per job
+#
+# USAGE:
+#   ./run_pigz_xz.sh <input.fastq> <output_directory>
+#
+# EXAMPLE:
+#   ./run_pigz_xz.sh /data/sample.fastq /results/compression_benchmark
+#
+# MONITORING:
+#   squeue -u $USER                    # Check job status
+#   tail -f <outdir>/*_compress_*.out  # Watch compression progress
+#
+# PARSING RESULTS:
+#   After completion, compare file sizes:
+#     ls -lh <outdir>/*.gz <outdir>/*.xz
+#
+#   Extract timing from logs:
+#     grep "Elapsed" <outdir>/*.out
+#
+#   Extract peak memory:
+#     grep "Maximum resident" <outdir>/*.out
+#
+# DEPENDENCIES:
+#   - pigz (parallel gzip)
+#   - xz (with threading support)
+#   - SLURM workload manager
+#===============================================================================
 
 INPUT_FASTQ="$1"
 THREADS=64
 OUTDIR="$2"
 
-if [[ -z "$INPUT_FASTQ" ]]; then
-    echo "Usage: ./launch_benchmark.sh /path/to/input.fastq /path/to/output_dir"
+if [[ -z "$INPUT_FASTQ" || -z "$OUTDIR" ]]; then
+    echo "Usage: ./run_pigz_xz.sh /path/to/input.fastq /path/to/output_dir"
+    exit 1
+fi
+
+if [[ ! -f "$INPUT_FASTQ" ]]; then
+    echo "Error: Input file not found: $INPUT_FASTQ"
     exit 1
 fi
 
 mkdir -p "$OUTDIR"
 BASENAME=$(basename "$INPUT_FASTQ" .fastq)
 BASENAME=$(basename "$BASENAME" .fq)
+
+echo "=============================================="
+echo "FASTQ Compression Benchmark"
+echo "=============================================="
+echo "Input:   $INPUT_FASTQ"
+echo "Output:  $OUTDIR"
+echo "Threads: $THREADS"
+echo "=============================================="
+echo ""
 
 # Submit compression jobs
 JOB1=$(sbatch --parsable --job-name=xz_fast_c --partition=qDEV --ntasks=1 --cpus-per-task=64 --time=11:00:00 \
@@ -67,4 +146,9 @@ sbatch --dependency=afterok:$JOB5 --job-name=pigz_zopfli_d --partition=qDEV --nt
 echo "Submitted pigz_zopfli decompress (depends on $JOB5)"
 
 echo ""
-echo "All jobs submitted. Check status with: squeue -u \$USER"
+echo "=============================================="
+echo "All jobs submitted!"
+echo "=============================================="
+echo "Monitor with: squeue -u \$USER"
+echo "Results in:   $OUTDIR"
+echo "=============================================="
