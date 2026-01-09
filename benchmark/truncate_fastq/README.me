@@ -1,0 +1,1 @@
+sbatch -p qDEV -N 1 -n 48 -t 11:00:00 -o wordcount.txt --wrap="dd if=/home/users/muddin21/WA/projects/fastr/fastq/HiFi_fastq/ERR16043555.fastq of=/home/users/muddin21/WA/projects/fastr/fastq/HiFi_fastq/ERR16043555_trunc_dd_qdev.fastq bs=1M count=31470 iflag=count_bytes count=33000000000" 
