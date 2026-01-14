@@ -696,8 +696,8 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                             
                             # Check in full file
                             abs_candidate = abs_start + candidate
-                            search_limit = min(file_size, abs_candidate + 200)
-                            search_region = full_data[abs_candidate:search_limit]
+                            search_region = full_data[abs_candidate:]
+                            xff_pos_rel = search_region.find(b'\xff')
                             xff_pos_rel = search_region.find(b'\xff')
                             
                             if xff_pos_rel == -1:
@@ -746,16 +746,14 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                             else:
                                 # Search in full file
                                 abs_seq_start = abs_start + candidate_end
-                                search_limit = min(file_size, abs_seq_start + 500000)
-                                search_region = full_data[abs_seq_start:search_limit]
+                                search_region = full_data[abs_seq_start:]
                                 next_at_rel = search_region.find(b'\n@')
                                 
                                 if next_at_rel != -1:
                                     next_at_abs = abs_seq_start + next_at_rel
                                     
                                     # Validate in full file
-                                    xff_search_limit = min(file_size, next_at_abs + 200)
-                                    xff_region = full_data[next_at_abs:xff_search_limit]
+                                    xff_region = full_data[next_at_abs:]
                                     xff_rel = xff_region.find(b'\xff')
                                     following_at_rel = xff_region.find(b'\n@', 2)
                                     
@@ -820,10 +818,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         else:
                             # Check in full file
                             abs_seq_start = abs_start + seq_start
-                            search_limit = min(file_size, abs_seq_start + 1000000)
-                            
-                            # Look for next @ in full file
-                            search_region = full_data[abs_seq_start:search_limit]
+                            search_region = full_data[abs_seq_start:]
                             next_at_rel = search_region.find(b'@', 1)
                             
                             if next_at_rel != -1:
@@ -1154,8 +1149,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                             
                             # Check in full file
                             abs_candidate = abs_start + candidate
-                            search_limit = min(file_size, abs_candidate + 200)
-                            search_region = full_data[abs_candidate:search_limit]
+                            search_region = full_data[abs_candidate:]
                             xff_pos_rel = search_region.find(b'\xff')
                             
                             if xff_pos_rel == -1:
@@ -1204,16 +1198,14 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                             else:
                                 # Search in full file
                                 abs_seq_start = abs_start + candidate_end
-                                search_limit = min(file_size, abs_seq_start + 500000)
-                                search_region = full_data[abs_seq_start:search_limit]
+                                search_region = full_data[abs_seq_start:]
                                 next_at_rel = search_region.find(b'\n@')
                                 
                                 if next_at_rel != -1:
                                     next_at_abs = abs_seq_start + next_at_rel
                                     
                                     # Validate in full file
-                                    xff_search_limit = min(file_size, next_at_abs + 200)
-                                    xff_region = full_data[next_at_abs:xff_search_limit]
+                                    xff_region = full_data[next_at_abs:]
                                     xff_rel = xff_region.find(b'\xff')
                                     following_at_rel = xff_region.find(b'\n@', 2)
                                     
@@ -1269,8 +1261,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                             seq_end = next_header 
                         else:
                             abs_seq_start = abs_start + seq_start
-                            search_limit = min(file_size, abs_seq_start + 1000000)
-                            search_region = full_data[abs_seq_start:search_limit]
+                            search_region = full_data[abs_seq_start:]
                             next_header_rel = search_region.find(b'\n@')
                             
                             if next_header_rel != -1:
