@@ -22,12 +22,31 @@ def get_scaling_equation(scaling_method: str, custom_formula=None, phred_alphabe
 
 def create_phred_quality_map(phred_offset=33, phred_alphabet_max=41):
     """Create mapping from ASCII quality characters to numeric quality scores"""
-    phred_map = np.zeros(128, dtype=np.uint8)
+    phred_map = np.zeros(256, dtype=np.uint8)
     
-    for ascii_val in range(128):
+    clamped_low_count = 0
+    clamped_high_count = 0
+    
+    for ascii_val in range(256):
         quality_score = ascii_val - phred_offset
-        quality_score = max(0, min(quality_score, (phred_alphabet_max-1)))
+        
+        if quality_score < 0:
+            quality_score = 0
+            clamped_low_count += 1
+        elif quality_score > phred_alphabet_max:
+            quality_score = phred_alphabet_max
+            clamped_high_count += 1
+        
         phred_map[ascii_val] = quality_score
+    
+    valid_range = (phred_offset, phred_offset + phred_alphabet_max)
+    logger.info(f"Created Phred quality map: offset={phred_offset}, max_quality={phred_alphabet_max}")
+    logger.info(f"Valid ASCII range for quality: {valid_range[0]}-{valid_range[1]} ('{chr(valid_range[0])}' to '{chr(valid_range[1])}')")
+    
+    if clamped_low_count > 0:
+        logger.info(f"ASCII values 0-{phred_offset-1} will be clamped to quality 0 if encountered")
+    if clamped_high_count > 0:
+        logger.info(f"ASCII values {phred_offset + phred_alphabet_max + 1}-255 will be clamped to quality {phred_alphabet_max} if encountered")
     
     return phred_map
 

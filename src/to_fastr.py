@@ -465,8 +465,8 @@ def main():
                               help="Return textual bases without scaling or one-hot encoding (0/1) [0]")
     output_group.add_argument("--keep_qual", type=int, default=0, metavar="INT",
                               help="Keep original quality scores in output (0/1) [0]")
-    output_group.add_argument("--phred_alpha", type=str, default='phred42', metavar="STR",
-                              help="Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred42]")
+    output_group.add_argument("--phred_alpha", type=str, default='phred94', metavar="STR",
+                              help="Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred94]")
     output_group.add_argument("--second_head", type=int, default=0, metavar="INT",
                               help="Repeat the header on the '+' line in the FASTQ output.")
     output_group.add_argument("--safe_mode", type=int, default=1, metavar="INT",
