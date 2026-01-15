@@ -62,7 +62,7 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
         logger.info(f"Paired-end mode enabled (output mode: {paired_end_mode})")
     
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
-    logger.info(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
+    logger.info(f"Processing with {chunk_size_mb}MB chunks")
     
     # Premake lookup table
     BYTE_LOOKUP = np.array([f'{i:03d}'.encode('ascii') for i in range(256)])
@@ -74,8 +74,6 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
     delimiter = None
     flowcell_start_index = 0
     total_sequences = 0
-    
-    logger.info("Reading and processing chunks in parallel...")
     
     headers_file = None
     if extract_headers:
@@ -98,7 +96,6 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
             phred_map=phred_map,
             compress_headers=compress_headers,
             sequencer_type=sequencer_type,
-            paired_end=paired_end,
             keep_bases=keep_bases,
             keep_quality=keep_quality,
             quality_scaling=quality_scaling,
@@ -124,10 +121,31 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
             current_flowcell_metadata = metadata
             flowcell_start_index = 0
         
-        # Store first chunk data to write after metadata
-        chunks_to_write = [(first_processed_bytes, first_headers_data)]
+        if sequencer_type != 'none' or mode is not None:
+            metadata_lines = []
+            metadata_lines.append(f"#MODE={mode}\n")
+            
+            seq_type_display = sequencer_type
+            if sra_accession:
+                if '_sra' not in sequencer_type:
+                    seq_type_display = f"{sequencer_type}_sra"
+            
+            metadata_lines.append(f"#SEQ-TYPE={seq_type_display}\n")
+            
+            # For now, write single flowcell metadata (we'll handle multiple flowcells in a second pass if needed)
+            metadata_obj = current_flowcell_metadata if current_flowcell_metadata else {}
+            write_sequencer_metadata(metadata_lines, metadata_obj, sequencer_type, structure_template,
+                                    paired_end, paired_end_mode, quality_scaling,
+                                    custom_formula, phred_alphabet_max, 0, -1, base_map, mode, second_head, safe_mode)
+            
+            metadata_bytes = ''.join(metadata_lines).encode('utf-8')
+            outfile.write(metadata_bytes)
         
-        # Create worker pool and process chunks as they come in
+        outfile.write(first_processed_bytes)
+        if extract_headers and first_headers_data:
+            headers_file.write(first_headers_data)
+        
+        # Create worker pool and stream chunks as they're processed
         with Pool(processes=num_workers) as pool:
             # Create partial function w/ fixed args
             worker_func = partial(
@@ -136,7 +154,6 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
                 phred_map=phred_map,
                 compress_headers=compress_headers,
                 sequencer_type=sequencer_type,
-                paired_end=paired_end,
                 keep_bases=keep_bases,
                 keep_quality=keep_quality,
                 quality_scaling=quality_scaling,
@@ -155,17 +172,16 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
                 verbose=verbose
             )
             
-            # Use imap to process chunks as they're read (streaming)
-            # chunksize=1 ensures order is preserved
             for chunk_id, processed_bytes, metadata, structure, delimiter_result, count, headers_data in pool.imap(
                 worker_func, 
                 chunk_gen, 
                 chunksize=1
             ):
-                # Collect chunks to write after metadata
-                chunks_to_write.append((processed_bytes, headers_data))
+                outfile.write(processed_bytes)
+                if extract_headers and headers_data:
+                    headers_file.write(headers_data)
                 
-                # Capture structure template from first chunk
+                # Capture structure template from first chunk 
                 if structure and structure_template is None:
                     structure_template = structure
                 # Capture delimiter from first chunk
@@ -193,8 +209,6 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
                 
                 total_sequences += count
                 
-                if total_sequences % 100000 == 0:
-                    logger.info(f"Processed {total_sequences:,} sequences...")
         
         # Finalize flowcell tracking
         if multiple_flowcells and current_flowcell_metadata is not None:
@@ -209,49 +223,11 @@ def convert_fastq_to_fastr(fastq_path, base_map, output_path, phred_map=None, mi
         
         # Print flowcell summary
         if multiple_flowcells and len(flowcell_metadata_list) > 1:
-            print(f"\nDetected {len(flowcell_metadata_list)} flowcells:")
+            logger.warning(f"\nDetected {len(flowcell_metadata_list)} flowcells - metadata written for first flowcell only!")
+            logger.warning("Multiple flowcell support requires two-pass processing or index-based reconstruction.")
             for idx, (metadata, start, end, _) in enumerate(flowcell_metadata_list):
                 fc_id = metadata.get('flowcell', metadata.get('movie', 'unknown'))
-                print(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
-        
-        # Write metadata headers at the beginning
-        if sequencer_type != 'none' or mode is not None:
-            metadata_lines = []
-            metadata_lines.append(f"#MODE={mode}\n")
-            
-            seq_type_display = sequencer_type
-            if sra_accession:
-                if '_sra' not in sequencer_type:
-                    seq_type_display = f"{sequencer_type}_sra"
-            
-            metadata_lines.append(f"#SEQ-TYPE={seq_type_display}\n")
-            
-            if multiple_flowcells and len(flowcell_metadata_list) > 0:
-                # Build metadata lines for multiple flowcells
-                for fc_idx, (metadata, start_idx, end_idx, struct) in enumerate(flowcell_metadata_list):
-                    if fc_idx > 0:
-                        metadata_lines.append("\n")
-                        metadata_lines.append(f"#MODE={mode}\n")
-                        metadata_lines.append(f"#SEQ-TYPE={seq_type_display}\n")
-                    
-                    write_sequencer_metadata(metadata_lines, metadata, sequencer_type, struct, 
-                                            paired_end, paired_end_mode, quality_scaling, 
-                                            custom_formula, phred_alphabet_max, start_idx, end_idx, base_map, mode, second_head, safe_mode)
-            else:
-                # Single flowcell
-                metadata = current_flowcell_metadata if current_flowcell_metadata else {}
-                write_sequencer_metadata(metadata_lines, metadata, sequencer_type, structure_template,
-                                        paired_end, paired_end_mode, quality_scaling,
-                                        custom_formula, phred_alphabet_max, 0, total_sequences - 1, base_map, mode, second_head, safe_mode)
-            
-            metadata_bytes = ''.join(metadata_lines).encode('utf-8')
-            outfile.write(metadata_bytes)
-        
-        # Write all collected sequence data
-        for processed_bytes, headers_data in chunks_to_write:
-            outfile.write(processed_bytes)
-            if extract_headers and headers_data:
-                headers_file.write(headers_data)
+                logger.info(f"  Flowcell {idx + 1}: {fc_id} (sequences {start}-{end}, total: {end - start + 1})")
     
     if extract_headers and headers_file:
         headers_file.close()
