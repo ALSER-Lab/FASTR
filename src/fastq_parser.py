@@ -7,7 +7,7 @@ from header_compression import adaptive_compress_header, analyze_headers_for_pat
 
 def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: np.ndarray,
                                     phred_map: Optional[np.ndarray], compress_headers: bool,
-                                    sequencer_type: str, paired_end: bool, keep_bases: bool,
+                                    sequencer_type: str, keep_bases: bool,
                                     keep_quality: bool, adaptive_structure: Optional[str] = None,
                                     adaptive_delimiter: Optional[str] = None,
                                     adaptive_sample_size: int = 100) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], Optional[str], Optional[str], int]:
@@ -133,20 +133,6 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
             record_index = start_index + batch_start + idx
             header_str = header_strs[idx]
             
-            pair_number = 0
-            if paired_end:
-                if header_str.endswith('/1') or header_str.endswith('_1'):
-                    pair_number = 1
-                elif header_str.endswith('/2') or header_str.endswith('_2'):
-                    pair_number = 2
-                elif ' ' in header_str: # Illumina uses a space
-                    last_part = header_str.split(' ')[-1]
-                    if last_part.startswith('1:'):
-                        pair_number = 1
-                    elif last_part.startswith('2:'):
-                        pair_number = 2
-            
-            
             header_idx_in_rec = record_boundaries[batch_start + idx][0]
             original_header = lines[header_idx_in_rec] + b'\n'
             
@@ -165,10 +151,7 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                     if structure and structure_template is None:
                         structure_template = structure
                 
-                if paired_end and pair_number > 0:
-                    header = f"@{unique_id}/{pair_number}\n".encode('utf-8')
-                else:
-                    header = f"@{unique_id}\n".encode('utf-8')
+                header = f"@{unique_id}\n".encode('utf-8')
             else:
                 header = original_header
             
@@ -180,7 +163,6 @@ def parse_fastq_records_from_buffer(buffer: bytes, start_index: int, base_map: n
                 header=header,
                 sequence=seq_arrays[idx],
                 quality=qual_vals,
-                pair_number=pair_number,
                 quality_string=qual_data_list[idx] if keep_quality else b'',
                 original_header=original_header
             )
