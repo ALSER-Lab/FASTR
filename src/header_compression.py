@@ -338,7 +338,7 @@ def compress_header(header: str, sequencer_type: str) -> Tuple[Dict, str, str]:
     return {}, header, ""
 
 
-def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_type: str, pair_number: int = 0) -> str:
+def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_type: str) -> str:
     """
     Reconstruct full header from structure template and unique ID.
     """
@@ -349,9 +349,6 @@ def reconstruct_header_from_structure(structure: str, unique_id: str, sequencer_
     for i, part in enumerate(unique_parts, 1):
         placeholder = f"{{REPEATING_{i}}}"
         result = result.replace(placeholder, part)
-    
-    if pair_number > 0:
-        result = f"{result}/{pair_number}"
     
     return f"@{result}"
 

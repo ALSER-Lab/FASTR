@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def process_chunk_worker(chunk_data: Tuple[int, bytes, int], base_map: np.ndarray, phred_map: np.ndarray, compress_headers: bool,
-                        sequencer_type: str, paired_end: bool, keep_bases: bool, 
+                        sequencer_type: str, keep_bases: bool, 
                         keep_quality: bool, quality_scaling: str, custom_formula: str,
                         phred_alphabet_max: int, min_quality: int, BYTE_LOOKUP: np.ndarray, binary: bool,
                         remove_repeating_header: bool, adaptive_structure: str, 
@@ -29,7 +29,7 @@ def process_chunk_worker(chunk_data: Tuple[int, bytes, int], base_map: np.ndarra
         # Parse the records from buffer
         records, _, metadata, structure, delimiter, count = parse_fastq_records_from_buffer(
             buffer, start_index, base_map, phred_map,
-            compress_headers, sequencer_type, paired_end,
+            compress_headers, sequencer_type,
             keep_bases, keep_quality,
             adaptive_structure=adaptive_structure,
             adaptive_delimiter=adaptive_delimiter,
@@ -103,5 +103,3 @@ def chunk_generator(fastq_path: str, chunk_size_bytes: int):
                 start_index += estimated_records
                 chunk_id += 1
                 
-                if chunk_id % 10 == 0:
-                    logger.info(f"Read {chunk_id} chunks...")
