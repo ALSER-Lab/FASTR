@@ -609,32 +609,34 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
     try:
         chunk_id, abs_start, abs_end, start_seq_idx = chunk_data
         
-        MAX_CHUNK_EXTENSION = 10 * 1024 * 1024
+        MAX_CHUNK_EXTENSION = 1 * 1024 * 1024
         
-        headers_mmap = None
+        headers_data = None
         headers_offsets = None
         if mode == 3 and headers_file_path:
             with open(headers_file_path, 'rb') as hf:
-                headers_mmap = mmap.mmap(hf.fileno(), 0, access=mmap.ACCESS_READ)
-                headers_offsets = []
-                pos = 0
-                line_idx = 0
                 target_start = start_seq_idx
                 target_end = start_seq_idx + 200000
                 
-                while pos < len(headers_mmap) and line_idx < target_end:
-                    if line_idx >= target_start:
-                        headers_offsets.append(pos)
-                    next_newline = headers_mmap.find(b'\n', pos)
-                    if next_newline == -1:
-                        if line_idx >= target_start:
-                            headers_offsets.append(pos)
+                headers_offsets = []
+                pos = 0
+                line_idx = 0
+                
+                for line in hf:
+                    if line_idx >= target_end:
                         break
-                    pos = next_newline + 1
+                    if line_idx >= target_start:
+                        if headers_data is None:
+                            headers_data = line
+                        else:
+                            headers_data += line
+                        headers_offsets.append(len(headers_data) - len(line))
                     line_idx += 1
         
         with open(mmap_path, 'rb') as f:
-            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            f.seek(abs_start)
+            chunk_read_size = (abs_end - abs_start) + MAX_CHUNK_EXTENSION
+            data = f.read(chunk_read_size)
         
         output_buffer = io.BytesIO()
         sequence_count = start_seq_idx
@@ -659,33 +661,33 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 if safe_mode_flag:
                     # Safe mode, format is: \n@header(255)\nbases\n
                     # Find next @ with validation
-                    if cursor == 0 and data[abs_start:abs_start+1] == b'@':
+                    if cursor == 0 and data[0:1] == b'@':
                         # First sequence in chunk starts at position 0
                         header_start_rel = 0
                     else:
                         # Always look for \n@ for subsequent sequences
-                        header_start_rel = data.find(b'\n@', abs_start + cursor, abs_end) - abs_start
-                        if header_start_rel - abs_start != -1 - abs_start:
-                            header_start_rel += 1 # Skip the \n, point to the @ by incrementing by 1
+                        header_start_rel = data.find(b'\n@', cursor)
+                        if header_start_rel != -1:
+                            header_start_rel += 1
                     
-                    if header_start_rel < 0 or abs_start + header_start_rel >= abs_end:
+                    if header_start_rel < 0 or header_start_rel >= chunk_size:
                         break
                     
                     candidate = header_start_rel # Then validate by finding \xff after this
                     
                     while candidate >= 0:
-                        next_xff_abs = data.find(b'\xff', abs_start + candidate, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
-                        next_at_abs = data.find(b'\n@', abs_start + candidate + 1, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
+                        next_xff_rel = data.find(b'\xff', candidate, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
+                        next_at_rel = data.find(b'\n@', candidate + 1, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
                         # If another \n@ comes before \xff, current candidate is invalid
-                        if next_at_abs != -1 and (next_xff_abs == -1 or next_at_abs < next_xff_abs):
-                            candidate = next_at_abs - abs_start + 1
-                            if abs_start + candidate >= abs_end + MAX_CHUNK_EXTENSION:
+                        if next_at_rel != -1 and (next_xff_rel == -1 or next_at_rel < next_xff_rel):
+                            candidate = next_at_rel + 1
+                            if candidate >= chunk_size + MAX_CHUNK_EXTENSION:
                                 candidate = -1
                                 break
                             continue
                         
-                        if next_xff_abs != -1:
-                            xff_pos = next_xff_abs - abs_start
+                        if next_xff_rel != -1:
+                            xff_pos = next_xff_rel
                             break
                         
                         candidate = -1
@@ -695,78 +697,77 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         break
                     
                     header_start = candidate
-                    xff_pos_abs = abs_start + xff_pos
                     
-                    header = data[abs_start + header_start:xff_pos_abs].decode('utf-8', errors='replace').strip()
+                    header = data[header_start:xff_pos].decode('utf-8', errors='replace').strip()
                     
-                    if xff_pos_abs + 1 < len(data) and data[xff_pos_abs+1:xff_pos_abs+2] == b'\n':
-                        seq_start_abs = xff_pos_abs + 2
+                    if xff_pos + 1 < len(data) and data[xff_pos+1:xff_pos+2] == b'\n':
+                        seq_start_rel = xff_pos + 2
                     else:
-                        seq_start_abs = xff_pos_abs + 1
+                        seq_start_rel = xff_pos + 1
                     
-                    candidate_end_abs = seq_start_abs
-                    seq_end_abs = -1
+                    candidate_end_rel = seq_start_rel
+                    seq_end_rel = -1
                     
                     while True:
-                        next_at_abs = data.find(b'\n@', candidate_end_abs, min(seq_start_abs + MAX_CHUNK_EXTENSION, len(data)))
+                        next_at_rel = data.find(b'\n@', candidate_end_rel, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
                         
-                        if next_at_abs != -1:
-                            next_xff_abs = data.find(b'\xff', next_at_abs + 1, min(next_at_abs + 1000, len(data)))
-                            following_at_abs = data.find(b'\n@', next_at_abs + 2, min(next_at_abs + 1000, len(data)))
+                        if next_at_rel != -1:
+                            next_xff_rel = data.find(b'\xff', next_at_rel + 1, min(len(data), next_at_rel + 1000))
+                            following_at_rel = data.find(b'\n@', next_at_rel + 2, min(len(data), next_at_rel + 1000))
                             
-                            if following_at_abs != -1 and (next_xff_abs == -1 or following_at_abs < next_xff_abs):
-                                candidate_end_abs = following_at_abs + 1
-                                if candidate_end_abs > seq_start_abs + MAX_CHUNK_EXTENSION:
+                            if following_at_rel != -1 and (next_xff_rel == -1 or following_at_rel < next_xff_rel):
+                                candidate_end_rel = following_at_rel + 1
+                                if candidate_end_rel > seq_start_rel + MAX_CHUNK_EXTENSION:
                                     break
                                 continue
                             
-                            seq_end_abs = next_at_abs
+                            seq_end_rel = next_at_rel
                             break
                         else:
-                            seq_end_abs = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
-                            while seq_end_abs > seq_start_abs and data[seq_end_abs-1:seq_end_abs] in (b'\n', b'\r', b' '):
-                                seq_end_abs -= 1
+                            seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
+                            while seq_end_rel > seq_start_rel and data[seq_end_rel-1:seq_end_rel] in (b'\n', b'\r', b' '):
+                                seq_end_rel -= 1
                             break
                     
-                    if seq_end_abs == -1 or seq_end_abs <= seq_start_abs:
+                    if seq_end_rel == -1 or seq_end_rel <= seq_start_rel:
                         cursor = len(data)
                         continue
                     
-                    seq_data = data[seq_start_abs:seq_end_abs]
+                    seq_data = data[seq_start_rel:seq_end_rel]
                     
                     if len(seq_data) == 0:
-                        cursor = seq_end_abs - abs_start
+                        cursor = seq_end_rel
                         continue
                     
-                    cursor = seq_end_abs - abs_start
+                    cursor = seq_end_rel
                     
                 else:
-                    header_start_abs = data.find(b'@', abs_start + cursor, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
-                    if header_start_abs == -1:
+                    header_start_rel = data.find(b'@', cursor, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
+                    if header_start_rel == -1:
                         break
                     
-                    header_end_abs = data.find(b'\n', header_start_abs, min(header_start_abs + 10000, len(data)))
-                    if header_end_abs == -1:
+                    header_end_rel = data.find(b'\n', header_start_rel, min(len(data), header_start_rel + 10000))
+                    if header_end_rel == -1:
                         break
                     
-                    header = data[header_start_abs:header_end_abs].decode('utf-8', errors='ignore')
+                    header = data[header_start_rel:header_end_rel].decode('utf-8', errors='ignore')
                     
-                    seq_start_abs = header_end_abs + 1
+                    seq_start_rel = header_end_rel + 1
                     
-                    next_at_abs = data.find(b'@', seq_start_abs + 1, min(seq_start_abs + MAX_CHUNK_EXTENSION, len(data)))
+                    next_at_rel = data.find(b'@', seq_start_rel + 1, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
                     
-                    if next_at_abs != -1 and next_at_abs > seq_start_abs:
-                        if data[next_at_abs-1:next_at_abs] == b'\n':
-                            seq_end_abs = next_at_abs - 1
+                    if next_at_rel != -1 and next_at_rel > seq_start_rel:
+                        if data[next_at_rel-1:next_at_rel] == b'\n':
+                            seq_end_rel = next_at_rel - 1
                         else:
-                            seq_end_abs = next_at_abs
+                            seq_end_rel = next_at_rel
                     else:
-                        seq_end_abs = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
-                        if seq_end_abs > seq_start_abs and data[seq_start_abs:seq_end_abs][-1:] == b'\n':
-                            seq_end_abs -= 1
+                        seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
+                        if seq_end_rel > seq_start_rel and data[seq_start_rel:seq_end_rel][-1:] == b'\n':
+                            seq_end_rel -= 1
                     
-                    seq_data = data[seq_start_abs:seq_end_abs]
-                    cursor = seq_end_abs - abs_start + 1
+                    seq_data = data[seq_start_rel:seq_end_rel]
+                    cursor = seq_end_rel + 1
 
                 # Check for metadata block changes (common for both safe and non-safe mode)
                 if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
@@ -797,9 +798,6 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 sequence_count += 1
                 sequences_in_chunk += 1
             
-            data.close()
-            if headers_mmap:
-                headers_mmap.close()
             return (chunk_id, output_buffer.getvalue(), sequences_in_chunk)
 
         
@@ -807,15 +805,15 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
             # Mode 0: Headers compressed, bases and quality as plain text 
             # @header\nBASES\n+\nQUALITY\n
             sequences_in_chunk = 0
-            cursor = abs_start # For mode 0, abs_start should already be at a record boundary
+            cursor = 0
             
             while cursor < len(data):
-                if cursor >= abs_end and sequences_in_chunk > 0:
+                if cursor >= (abs_end - abs_start) and sequences_in_chunk > 0:
                     break
                 
                 if data[cursor:cursor+1] != b'@':
                     # Try to find next @ 
-                    next_at = data.find(b'@', cursor, min(cursor + 10000, len(data)))
+                    next_at = data.find(b'@', cursor, min(len(data), cursor + 10000))
                     if next_at == -1:
                         break
                     cursor = next_at
@@ -832,7 +830,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 line3_start = -1
                 bases_parts = []
                 while seq_cursor < len(data):
-                    line_end = data.find(b'\n', seq_cursor, min(seq_cursor + 100000, len(data)))
+                    line_end = data.find(b'\n', seq_cursor, min(len(data), seq_cursor + 100000))
                     if line_end == -1:
                         break
                     
@@ -928,34 +926,30 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 if cursor < len(data) and data[cursor:cursor+1] == b'\n':
                     cursor += 1
             
-            data.close()
-            if headers_mmap:
-                headers_mmap.close()
             return (chunk_id, output_buffer.getvalue(), sequences_in_chunk)
         
 
         elif mode == 3:
-            chunk_array = np.frombuffer(data[abs_start:abs_end], dtype=np.uint8)
+            chunk_array = np.frombuffer(data[0:(abs_end - abs_start)], dtype=np.uint8)
             marker_positions = np.where(chunk_array == 255)[0].tolist()
             sequences_in_chunk = len(marker_positions)
             
             for idx, marker_pos in enumerate(marker_positions):
-                seq_start_abs = abs_start + marker_pos + 1
+                seq_start_rel = marker_pos + 1
                 
                 if idx < len(marker_positions) - 1:
                     # Not the last marker in chunk so we use next marker in chunk
-                    seq_end_abs = abs_start + marker_positions[idx+1]
+                    seq_end_rel = marker_positions[idx+1]
                 else:
-                    search_limit = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
                     # Find next 255 marker in full file
-                    next_marker_abs = data.find(b'\xff', seq_start_abs, search_limit)
+                    next_marker_rel = data.find(b'\xff', seq_start_rel, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
                     
-                    if next_marker_abs != -1:
-                        seq_end_abs = next_marker_abs
+                    if next_marker_rel != -1:
+                        seq_end_rel = next_marker_rel
                     else:
-                        seq_end_abs = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
+                        seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
                 
-                seq_data = data[seq_start_abs:seq_end_abs]
+                seq_data = data[seq_start_rel:seq_end_rel]
                 
                 # Check if we need to switch metadata blocks
                 if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
@@ -969,18 +963,18 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 bases_array = reverse_map[seq_array]
                 bases = bases_array.tobytes().decode('ascii')
                 
-                if headers_mmap and headers_offsets:
+                if headers_data and headers_offsets:
                     offset_idx = sequence_count - start_seq_idx
                     if offset_idx < len(headers_offsets):
                         start_offset = headers_offsets[offset_idx]
                         if offset_idx + 1 < len(headers_offsets):
                             end_offset = headers_offsets[offset_idx + 1] - 1
                         else:
-                            end_offset = headers_mmap.find(b'\n', start_offset)
+                            end_offset = headers_data.find(b'\n', start_offset)
                             if end_offset == -1:
-                                end_offset = len(headers_mmap)
+                                end_offset = len(headers_data)
                         
-                        header = headers_mmap[start_offset:end_offset].decode('utf-8', errors='ignore')
+                        header = headers_data[start_offset:end_offset].decode('utf-8', errors='ignore')
                         if not header.startswith('@'):
                             header = '@' + header
                     else:
@@ -1012,9 +1006,6 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 output_buffer.write(b"\n")
                 sequence_count += 1
             
-            data.close()
-            if headers_mmap:
-                headers_mmap.close()
             return (chunk_id, output_buffer.getvalue(), sequences_in_chunk)
 
         elif mode == 2:
@@ -1026,35 +1017,35 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
             while cursor < chunk_size:
                 if safe_mode_flag:
                     # Find next @ with validation
-                    if cursor == 0 and data[abs_start:abs_start+1] == b'@':
+                    if cursor == 0 and data[0:1] == b'@':
                         # First sequence in chunk starts at position 0
                         header_start_rel = 0
                     else:
                         # Always look for \n@ for subsequent sequences
-                        header_start_rel = data.find(b'\n@', abs_start + cursor, abs_end) - abs_start
-                        if header_start_rel - abs_start != -1 - abs_start:
+                        header_start_rel = data.find(b'\n@', cursor)
+                        if header_start_rel != -1:
                             header_start_rel += 1 # Skip the \n, point to the @
                     
-                    if header_start_rel < 0 or abs_start + header_start_rel >= abs_end:
+                    if header_start_rel < 0 or header_start_rel >= chunk_size:
                         break
                     
                     candidate = header_start_rel # Then validate by finding \xff after this
                     
                     while candidate >= 0:
-                        next_xff_abs = data.find(b'\xff', abs_start + candidate, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
-                        next_at_abs = data.find(b'\n@', abs_start + candidate + 1, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
+                        next_xff_rel = data.find(b'\xff', candidate, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
+                        next_at_rel = data.find(b'\n@', candidate + 1, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
                         
                         # If another \n@ comes before \xff, current candidate is invalid
-                        if next_at_abs != -1 and (next_xff_abs == -1 or next_at_abs < next_xff_abs):
-                            candidate = next_at_abs - abs_start + 1
-                            if abs_start + candidate >= abs_end + MAX_CHUNK_EXTENSION:
+                        if next_at_rel != -1 and (next_xff_rel == -1 or next_at_rel < next_xff_rel):
+                            candidate = next_at_rel + 1
+                            if candidate >= chunk_size + MAX_CHUNK_EXTENSION:
                                 candidate = -1
                                 break
                             continue
                         
                         # Found valid \xff
-                        if next_xff_abs != -1:
-                            xff_pos = next_xff_abs - abs_start
+                        if next_xff_rel != -1:
+                            xff_pos = next_xff_rel
                             break
                         
                         candidate = -1
@@ -1064,81 +1055,80 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         break
                     
                     header_start = candidate
-                    xff_pos_abs = abs_start + xff_pos
                     
                     # Extract header (between @ and \xff) w/ mode 2 reconstructing the header based off structure
-                    header_content = data[abs_start + header_start + 1:xff_pos_abs].decode('utf-8', errors='replace').strip()
+                    header_content = data[header_start + 1:xff_pos].decode('utf-8', errors='replace').strip()
                     
                     # Bases start after \xff\n or \xff
-                    if xff_pos_abs + 1 < len(data) and data[xff_pos_abs+1:xff_pos_abs+2] == b'\n':
-                        seq_start_abs = xff_pos_abs + 2
+                    if xff_pos + 1 < len(data) and data[xff_pos+1:xff_pos+2] == b'\n':
+                        seq_start_rel = xff_pos + 2
                     else:
-                        seq_start_abs = xff_pos_abs + 1
+                        seq_start_rel = xff_pos + 1
                     
                     # Find sequence end (next valid @ header)
-                    candidate_end_abs = seq_start_abs
-                    seq_end_abs = -1
+                    candidate_end_rel = seq_start_rel
+                    seq_end_rel = -1
                     
                     while True:
-                        next_at_abs = data.find(b'\n@', candidate_end_abs, min(seq_start_abs + MAX_CHUNK_EXTENSION, len(data)))
+                        next_at_rel = data.find(b'\n@', candidate_end_rel, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
                         
-                        if next_at_abs != -1:
+                        if next_at_rel != -1:
                             # Validate our \n@
-                            next_xff_abs = data.find(b'\xff', next_at_abs + 1, min(next_at_abs + 1000, len(data)))
-                            following_at_abs = data.find(b'\n@', next_at_abs + 2, min(next_at_abs + 1000, len(data)))
+                            next_xff_rel = data.find(b'\xff', next_at_rel + 1, min(len(data), next_at_rel + 1000))
+                            following_at_rel = data.find(b'\n@', next_at_rel + 2, min(len(data), next_at_rel + 1000))
                             
-                            if following_at_abs != -1 and (next_xff_abs == -1 or following_at_abs < next_xff_abs):
-                                candidate_end_abs = following_at_abs + 1
-                                if candidate_end_abs > seq_start_abs + MAX_CHUNK_EXTENSION:
+                            if following_at_rel != -1 and (next_xff_rel == -1 or following_at_rel < next_xff_rel):
+                                candidate_end_rel = following_at_rel + 1
+                                if candidate_end_rel > seq_start_rel + MAX_CHUNK_EXTENSION:
                                     break
                                 continue
                             
                             # Valid header if sequence ends at the \n
-                            seq_end_abs = next_at_abs
+                            seq_end_rel = next_at_rel
                             break
                         else:
-                            seq_end_abs = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
-                            while seq_end_abs > seq_start_abs and data[seq_end_abs-1:seq_end_abs] in (b'\n', b'\r', b' '):
-                                seq_end_abs -= 1
+                            seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
+                            while seq_end_rel > seq_start_rel and data[seq_end_rel-1:seq_end_rel] in (b'\n', b'\r', b' '):
+                                seq_end_rel -= 1
                             break
                     
-                    if seq_end_abs == -1 or seq_end_abs <= seq_start_abs:
+                    if seq_end_rel == -1 or seq_end_rel <= seq_start_rel:
                         cursor = len(data)
                         continue
                     
-                    seq_data = data[seq_start_abs:seq_end_abs]
+                    seq_data = data[seq_start_rel:seq_end_rel]
                     
                     if len(seq_data) == 0:
-                        cursor = seq_end_abs - abs_start
+                        cursor = seq_end_rel
                         continue
                     
-                    cursor = seq_end_abs - abs_start
+                    cursor = seq_end_rel
                     
                 else:
                     # Search in full file
-                    start_idx_abs = data.find(b'@', abs_start + cursor, min(abs_end + MAX_CHUNK_EXTENSION, len(data)))
-                    if start_idx_abs == -1:
+                    start_idx_rel = data.find(b'@', cursor, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
+                    if start_idx_rel == -1:
                         break
                     
-                    header_end_abs = data.find(b'\n', start_idx_abs, min(start_idx_abs + 10000, len(data)))
-                    if header_end_abs == -1:
+                    header_end_rel = data.find(b'\n', start_idx_rel, min(len(data), start_idx_rel + 10000))
+                    if header_end_rel == -1:
                         break
                     
-                    header_content = data[start_idx_abs+1:header_end_abs].decode('utf-8', errors='ignore').strip()
+                    header_content = data[start_idx_rel+1:header_end_rel].decode('utf-8', errors='ignore').strip()
                     
-                    seq_start_abs = header_end_abs + 1
+                    seq_start_rel = header_end_rel + 1
                     
-                    next_header_abs = data.find(b'\n@', seq_start_abs, min(seq_start_abs + MAX_CHUNK_EXTENSION, len(data)))
+                    next_header_rel = data.find(b'\n@', seq_start_rel, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
                     
-                    if next_header_abs != -1:
-                        seq_end_abs = next_header_abs
+                    if next_header_rel != -1:
+                        seq_end_rel = next_header_rel
                     else:
-                        seq_end_abs = min(len(data), seq_start_abs + MAX_CHUNK_EXTENSION)
-                        while seq_end_abs > seq_start_abs and data[seq_end_abs-1:seq_end_abs] in (b'\n', b'\r', b' ', b'\t'):
-                            seq_end_abs -= 1
+                        seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
+                        while seq_end_rel > seq_start_rel and data[seq_end_rel-1:seq_end_rel] in (b'\n', b'\r', b' ', b'\t'):
+                            seq_end_rel -= 1
                     
-                    seq_data = data[seq_start_abs:seq_end_abs]
-                    cursor = seq_end_abs - abs_start + 1
+                    seq_data = data[seq_start_rel:seq_end_rel]
+                    cursor = seq_end_rel + 1
                 
                 unique_id = None
                 pair_number = 0
@@ -1200,9 +1190,6 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 sequence_count += 1
                 sequences_in_chunk += 1
             
-            data.close()
-            if headers_mmap:
-                headers_mmap.close()
             return (chunk_id, output_buffer.getvalue(), sequences_in_chunk)
 
     except Exception as e:
@@ -1236,15 +1223,18 @@ def reconstruct_fastq(input_path: str, output_path: str,
         logger.warning("WARNING: Mode 3 requires --headers_file argument")
         logger.info("Proceeding without headers - will use fallback header generation (currently: '@seq')")
     
-    with open(input_path, 'rb') as f:
-        data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-    file_size = len(data)
+    # Get file size without mmap
+    file_size = os.path.getsize(input_path)
     logger.info(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")
-
     
     logger.info(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag, second_head_flag, safe_mode_flag = parse_metadata_header(data, mode)
+    # Read only the header portion for metadata parsing
+    HEADER_READ_SIZE = 10 * 1024 * 1024  # Read first 10MB for headers
+    with open(input_path, 'rb') as f:
+        header_data = f.read(HEADER_READ_SIZE)
+    
+    metadata_blocks, data_start_byte, sra_accession, phred_from_metadata, detected_mode, length_flag, second_head_flag, safe_mode_flag = parse_metadata_header(header_data, mode)
 
     if detected_mode is not None:
         mode = detected_mode
@@ -1300,52 +1290,77 @@ def reconstruct_fastq(input_path: str, output_path: str,
     logger.info(f"Processing with {chunk_size_mb}MB chunks (parallel streaming mode)")
     
     def chunk_generator():
-        buffer_start = data_start_byte
-        buffer_len = len(data) - data_start_byte
         chunk_id = 0
         start_seq_idx = 0
-        pos = 0
+        
+        # For mode 0, we need to build an index first
         if mode == 0:
             logger.info("Mode 0: Building record index...")
-            record_positions = [buffer_start]  # Start of first record
-            cursor = buffer_start
+            record_positions = [data_start_byte]  # Start of first record
             
-            while cursor < len(data):
-                if data[cursor:cursor+1] != b'@':
-                    break
+            with open(input_path, 'rb') as f:
+                f.seek(data_start_byte)
+                # Read in large blocks to build index
+                SCAN_BLOCK_SIZE = 50 * 1024 * 1024  # 50MB blocks for scanning
+                buffer = b''
+                file_pos = data_start_byte
                 
-                line1_end = data.find(b'\n', cursor)
-                if line1_end == -1:
-                    break
-                
-                line2_start = line1_end + 1
-                line2_end = data.find(b'\n', line2_start)
-                if line2_end == -1:
-                    break
-                
-                bases_len = line2_end - line2_start
-                line3_start = line2_end + 1
-                line3_end = data.find(b'\n', line3_start)
-                if line3_end == -1:
-                    break
-                
-                if data[line3_start:line3_start+1] != b'+':
-                    break
-                
-                line4_start = line3_end + 1
-                line4_end = line4_start + bases_len
-                
-                cursor = line4_end
-                if cursor < len(data) and data[cursor:cursor+1] == b'\n':
-                    cursor += 1
-                
-                if cursor < len(data):
-                    record_positions.append(cursor)
+                while True:
+                    chunk = f.read(SCAN_BLOCK_SIZE)
+                    if not chunk:
+                        break
+                    
+                    buffer += chunk
+                    cursor = 0
+                    
+                    while cursor < len(buffer):
+                        # Check if we have enough data for a complete record
+                        if len(buffer) - cursor < 1000 and chunk:  # Keep some buffer
+                            break
+                        
+                        if buffer[cursor:cursor+1] != b'@':
+                            cursor += 1
+                            continue
+                        
+                        line1_end = buffer.find(b'\n', cursor)
+                        if line1_end == -1:
+                            break
+                        
+                        line2_start = line1_end + 1
+                        line2_end = buffer.find(b'\n', line2_start)
+                        if line2_end == -1:
+                            break
+                        
+                        bases_len = line2_end - line2_start
+                        line3_start = line2_end + 1
+                        line3_end = buffer.find(b'\n', line3_start)
+                        if line3_end == -1:
+                            break
+                        
+                        if buffer[line3_start:line3_start+1] != b'+':
+                            cursor += 1
+                            continue
+                        
+                        line4_start = line3_end + 1
+                        line4_end = line4_start + bases_len
+                        
+                        if line4_end > len(buffer):
+                            break
+                        
+                        cursor = line4_end
+                        if cursor < len(buffer) and buffer[cursor:cursor+1] == b'\n':
+                            cursor += 1
+                        
+                        record_positions.append(file_pos + cursor)
+                    
+                    # Keep unprocessed data
+                    buffer = buffer[cursor:]
+                    file_pos += cursor
             
             logger.info(f"Mode 0: Found {len(record_positions)} record boundaries")
             
-            # Now generate chunks based on record boundaries
-            records_per_chunk = max(1, chunk_size_bytes // 50000) 
+            # Generate chunks based on record boundaries
+            records_per_chunk = max(1, chunk_size_bytes // 50000)
             
             for i in range(0, len(record_positions), records_per_chunk):
                 abs_start = record_positions[i]
@@ -1353,7 +1368,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 if i + records_per_chunk < len(record_positions):
                     abs_end = record_positions[i + records_per_chunk]
                 else:
-                    abs_end = len(data)
+                    abs_end = file_size
                 
                 estimated_seqs = min(records_per_chunk, len(record_positions) - i)
                 
@@ -1367,94 +1382,101 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 if chunk_id % 10 == 0:
                     logger.info(f"Read {chunk_id} chunks...")
             
-            return 
+            return
         
-        while pos < buffer_len:
-            chunk_end = min(pos + chunk_size_bytes, buffer_len)
-            
-            # Find boundary based on mode
-            if mode == 3:
-                # Mode 3 splits on 255 markers
-                search_start = max(pos, chunk_end - 1000)
-                search_region = data[buffer_start + search_start:buffer_start + chunk_end]
-                last_marker = search_region.rfind(b'\xff')
-                
-                if last_marker != -1:
-                    chunk_end = search_start + last_marker
-
-            elif mode == 2 and safe_mode_flag:
-                # Safe mode splits on validated @header\xff pattern instead
-                search_start = max(pos, chunk_end - 1000)
-                search_region = data[buffer_start + search_start:buffer_start + chunk_end]
-                
-                # Find all @ positions and validate them (make sure they are the proper header start, not naturally in binary sequence data...)
-                candidate_pos = len(search_region) - 1
-                found_valid = False
-                
-                while candidate_pos > 0:
-                    at_pos = search_region.rfind(b'@', 0, candidate_pos)
-                    if at_pos == -1:
-                        break
-                    
-                    # Check if this @ has \xff after it (within reasonable distance)
-                    xff_pos = search_region.find(b'\xff', at_pos, min(at_pos + 200, len(search_region))) # 200 bytes search range subject to change
-                    
-                    intervening_at = search_region.find(b'\n@', at_pos + 1, min(at_pos + 200, len(search_region))) # Check if there's a \n@ between this @ and the \xff-
-                    # If so, it cannot be the valid header start assuming non-corrupted FASTQ headers span only one line...
-                    
-                    # Valid only if we found \xff AND no \n@ comes before it
-                    if xff_pos != -1 and (intervening_at == -1 or xff_pos < intervening_at):
-                        if at_pos > 0 and search_region[at_pos-1:at_pos] == b'\n': # This is a REAL validated header boundary
-                            chunk_end = search_start + at_pos
-                        else:
-                            chunk_end = search_start + at_pos
-                        found_valid = True
-                        break
-                    
-                    # If the @ in question was invalid, try the next one
-                    candidate_pos = at_pos
-                
-                if not found_valid:
-                    # Fallback if no valid boundary found in search region
-                    chunk_end = min(pos + chunk_size_bytes, buffer_len)
-            else:
-                # Mode 0, 1, and 2 (unsafe version) split on \n@ headers
-                search_start = max(pos, chunk_end - 1000)
-                search_region = data[buffer_start + search_start:buffer_start + chunk_end]
-                last_header = search_region.rfind(b'\n@')
-                
-                if last_header != -1:
-                    chunk_end = search_start + last_header + 1
-            
-            if chunk_end <= pos:
+        # For modes 1, 2, 3: Stream through file finding chunk boundaries
+        buffer_start = data_start_byte
+        buffer_len = file_size - data_start_byte
+        pos = 0
+        
+        with open(input_path, 'rb') as f:
+            while pos < buffer_len:
                 chunk_end = min(pos + chunk_size_bytes, buffer_len)
-            
-            abs_start = buffer_start + pos
-            abs_end = buffer_start + chunk_end
-            
-            if abs_end > abs_start:
+                
+                # Read search region for boundary detection
+                search_start = max(pos, chunk_end - 1000)
+                search_size = chunk_end - search_start + 1000  # Extra buffer for safety
+                
+                f.seek(buffer_start + search_start)
+                search_region = f.read(min(search_size, buffer_len - search_start))
+                
+                # Find boundary based on mode
                 if mode == 3:
-                    chunk_view = data[abs_start:abs_end]
-                    estimated_seqs = chunk_view.count(b'\xff')
+                    # Mode 3 splits on 255 markers
+                    last_marker = search_region.rfind(b'\xff', 0, chunk_end - search_start)
+                    
+                    if last_marker != -1:
+                        chunk_end = search_start + last_marker
+                
+                elif mode == 2 and safe_mode_flag:
+                    # Safe mode splits on validated @header\xff pattern
+                    candidate_pos = min(len(search_region) - 1, chunk_end - search_start)
+                    found_valid = False
+                    
+                    while candidate_pos > 0:
+                        at_pos = search_region.rfind(b'@', 0, candidate_pos)
+                        if at_pos == -1:
+                            break
+                        
+                        # Check if this @ has \xff after it (within reasonable distance)
+                        xff_pos = search_region.find(b'\xff', at_pos, min(at_pos + 200, len(search_region)))
+                        intervening_at = search_region.find(b'\n@', at_pos + 1, min(at_pos + 200, len(search_region)))
+                        
+                        # Valid only if we found \xff AND no \n@ comes before it
+                        if xff_pos != -1 and (intervening_at == -1 or xff_pos < intervening_at):
+                            chunk_end = search_start + at_pos
+                            found_valid = True
+                            break
+                        
+                        candidate_pos = at_pos
+                    
+                    if not found_valid:
+                        chunk_end = min(pos + chunk_size_bytes, buffer_len)
+                
                 else:
-                    chunk_view = data[abs_start:abs_end]
-                    estimated_seqs = chunk_view.count(b'\n@')
-                    if chunk_view.startswith(b'@'):
-                        estimated_seqs += 1
-                if verbose:
-                    logger.info(f"Yielding chunk {chunk_id}: {abs_start}-{abs_end} ({abs_end-abs_start} bytes, ~{estimated_seqs} seqs)")
+                    # Mode 1 and 2 (unsafe) split on \n@ headers
+                    last_header = search_region.rfind(b'\n@', 0, chunk_end - search_start)
+                    
+                    if last_header != -1:
+                        chunk_end = search_start + last_header + 1
                 
-                yield (chunk_id, abs_start, abs_end, start_seq_idx)
+                if chunk_end <= pos:
+                    chunk_end = min(pos + chunk_size_bytes, buffer_len)
                 
-                start_seq_idx += estimated_seqs
-                chunk_id += 1
-            
-            pos = chunk_end
-            if pos >= buffer_len:
-                break
+                abs_start = buffer_start + pos
+                abs_end = buffer_start + chunk_end
+                
+                if abs_end > abs_start:
+                    # Estimate sequences for this chunk
+                    f.seek(abs_start)
+                    sample = f.read(min(abs_end - abs_start, 100000))  # Sample first 100KB
+                    
+                    if mode == 3:
+                        estimated_seqs = sample.count(b'\xff')
+                        if len(sample) < abs_end - abs_start:
+                            # Extrapolate
+                            estimated_seqs = int(estimated_seqs * (abs_end - abs_start) / len(sample))
+                    else:
+                        estimated_seqs = sample.count(b'\n@')
+                        if sample.startswith(b'@'):
+                            estimated_seqs += 1
+                        if len(sample) < abs_end - abs_start:
+                            estimated_seqs = int(estimated_seqs * (abs_end - abs_start) / len(sample))
+                    
+                    if verbose:
+                        logger.info(f"Yielding chunk {chunk_id}: {abs_start}-{abs_end} ({abs_end-abs_start} bytes, ~{estimated_seqs} seqs)")
+                    
+                    yield (chunk_id, abs_start, abs_end, start_seq_idx)
+                    
+                    start_seq_idx += estimated_seqs
+                    chunk_id += 1
+                
+                pos = chunk_end
+                if pos >= buffer_len:
+                    break
 
     logger.info("Reconstructing FASTQ with parallel processing...")
-    total_sequences = 0
+    total_sequences = 0  
     
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         with Pool(processes=num_workers) as pool:
