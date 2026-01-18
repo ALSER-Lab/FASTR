@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import tempfile
 import numpy as np
 import time
@@ -609,29 +610,15 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
     try:
         chunk_id, abs_start, abs_end, start_seq_idx = chunk_data
         
-        MAX_CHUNK_EXTENSION = 1 * 1024 * 1024
-        
-        headers_data = None
-        headers_offsets = None
         if mode == 3 and headers_file_path:
-            with open(headers_file_path, 'rb') as hf:
-                target_start = start_seq_idx
-                target_end = start_seq_idx + 200000
-                
-                headers_offsets = []
-                pos = 0
-                line_idx = 0
-                
-                for line in hf:
-                    if line_idx >= target_end:
-                        break
-                    if line_idx >= target_start:
-                        if headers_data is None:
-                            headers_data = line
-                        else:
-                            headers_data += line
-                        headers_offsets.append(len(headers_data) - len(line))
-                    line_idx += 1
+            if not hasattr(process_chunk_worker_reconstruction, '_headers_cache'):
+                with open(headers_file_path, 'rb') as hf:
+                    process_chunk_worker_reconstruction._headers_cache = hf.readlines()
+            all_headers = process_chunk_worker_reconstruction._headers_cache
+        else:
+            all_headers = None
+        
+        MAX_CHUNK_EXTENSION = 10 * 1024 * 1024
         
         with open(mmap_path, 'rb') as f:
             f.seek(abs_start)
@@ -640,6 +627,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
         
         output_buffer = io.BytesIO()
         sequence_count = start_seq_idx
+        local_count = 0
         
         current_metadata_idx = 0
         if metadata_blocks:
@@ -651,6 +639,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
         else:
             current_metadata = None
             current_inverse_table = None
+            
         # Mode 1: Only bases compressed (original headers intact)
         if mode == 1:
             sequences_in_chunk = 0
@@ -930,28 +919,46 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
         
 
         elif mode == 3:
-            chunk_array = np.frombuffer(data[0:(abs_end - abs_start)], dtype=np.uint8)
-            marker_positions = np.where(chunk_array == 255)[0].tolist()
-            sequences_in_chunk = len(marker_positions)
+            sequences_in_chunk = 0
+            cursor = 0
+            chunk_size = abs_end - abs_start
             
-            for idx, marker_pos in enumerate(marker_positions):
-                seq_start_rel = marker_pos + 1
+            MAX_CHUNK_EXTENSION = 10 * 1024 * 1024  
+            
+            while cursor < chunk_size:
+                marker_pos = data.find(b'\xff', cursor)
                 
-                if idx < len(marker_positions) - 1:
-                    # Not the last marker in chunk so we use next marker in chunk
-                    seq_end_rel = marker_positions[idx+1]
+                if marker_pos == -1:
+                    with open(mmap_path, 'rb') as f:
+                        f.seek(abs_start + cursor)
+                        more_data = f.read(MAX_CHUNK_EXTENSION)
+                        if more_data:
+                            data += more_data
+                            marker_pos = data.find(b'\xff', cursor)
+                            if marker_pos == -1:
+                                break
+                        else:
+                            break
+                
+                seq_start_rel = marker_pos + 1
+                next_marker = data.find(b'\xff', seq_start_rel)
+                
+                if next_marker != -1:
+                    seq_end_rel = next_marker
                 else:
-                    # Find next 255 marker in full file
-                    next_marker_rel = data.find(b'\xff', seq_start_rel, min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION))
-                    
-                    if next_marker_rel != -1:
-                        seq_end_rel = next_marker_rel
-                    else:
-                        seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
+                    seq_end_rel = len(data)
                 
                 seq_data = data[seq_start_rel:seq_end_rel]
                 
-                # Check if we need to switch metadata blocks
+                # In mode 3 our \n value (which is technically between the next 255) can be misinterpreted as a base, so we will strip only the last \n
+                if len(seq_data) > 0 and seq_data[-1:] == b'\n':
+                    seq_data = seq_data[:-1]
+                
+                if len(seq_data) == 0:
+                    cursor = marker_pos + 1
+                    continue
+                
+                # Check for metadata block changes
                 if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
                     next_metadata = metadata_blocks[current_metadata_idx + 1]
                     if sequence_count >= next_metadata.start_index:
@@ -959,26 +966,15 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                         current_inverse_table = inverse_tables[current_metadata_idx + 1]
                         current_metadata_idx += 1
 
+                # Convert binary to bases
                 seq_array = np.frombuffer(seq_data, dtype=np.uint8)
                 bases_array = reverse_map[seq_array]
                 bases = bases_array.tobytes().decode('ascii')
                 
-                if headers_data and headers_offsets:
-                    offset_idx = sequence_count - start_seq_idx
-                    if offset_idx < len(headers_offsets):
-                        start_offset = headers_offsets[offset_idx]
-                        if offset_idx + 1 < len(headers_offsets):
-                            end_offset = headers_offsets[offset_idx + 1] - 1
-                        else:
-                            end_offset = headers_data.find(b'\n', start_offset)
-                            if end_offset == -1:
-                                end_offset = len(headers_data)
-                        
-                        header = headers_data[start_offset:end_offset].decode('utf-8', errors='ignore')
-                        if not header.startswith('@'):
-                            header = '@' + header
-                    else:
-                        header = f"@seq{sequence_count}"
+                if all_headers and sequence_count < len(all_headers):
+                    header = all_headers[sequence_count].decode('utf-8', errors='ignore').strip()
+                    if not header.startswith('@'):
+                        header = '@' + header
                 else:
                     if current_metadata and current_metadata.structure_template: 
                         header_prefix = find_structure_prefix(current_metadata.structure_template)
@@ -996,17 +992,28 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     )
                     quality_string = bytes((quality_scores + phred_offset).astype(np.uint8)).decode('ascii')
 
-                output_buffer.write(f"{header}\n".encode('ascii'))
+                # Write output
+                header_bytes = f"{header}\n".encode('ascii')
+                output_buffer.write(header_bytes)
+                
                 output_buffer.write(bases.encode('ascii'))
-                output_buffer.write(b"\n+")
+                
+                plus_line = b"\n+"
                 if second_head_flag:
-                    output_buffer.write(header[1:].encode('ascii')) # [1:] to skip the '@' in the second header, which is just written as +header, not +@header
-                output_buffer.write(b"\n")
+                    plus_line += header[1:].encode('ascii')
+                plus_line += b"\n"
+                output_buffer.write(plus_line)
+                
                 output_buffer.write(quality_string.encode('ascii'))
+                
                 output_buffer.write(b"\n")
-                sequence_count += 1
+                
+                sequence_count += 1 
+                sequences_in_chunk += 1
+                local_count += 1
+                cursor = seq_end_rel 
             
-            return (chunk_id, output_buffer.getvalue(), sequences_in_chunk)
+            return (chunk_id, output_buffer.getvalue(), local_count) 
 
         elif mode == 2:
             # Safe mode, format is: \n@header(255)\nbases\n
@@ -1211,17 +1218,19 @@ def reconstruct_fastq(input_path: str, output_path: str,
     
     # For mode 3, validate headers file exists but don't load it..
     # Workers will load it themselves to avoid pickle overhead
+    all_headers = None
     if mode == 3 and mode3_headers_file:
         if not os.path.exists(mode3_headers_file):
             raise FileNotFoundError(f"Headers file not found: {mode3_headers_file}")
         logger.info(f"Headers file: {mode3_headers_file} (will be loaded by workers)")
-        # Quick check of header count
+        
         with open(mode3_headers_file, 'rb') as hf:
-            header_count = sum(1 for _ in hf)
-        logger.info(f"Headers file contains {header_count:,} headers")
+            all_headers = hf.readlines()
+        logger.info(f"Headers file contains {len(all_headers):,} headers")
+        
     elif mode == 3 and not mode3_headers_file:
         logger.warning("WARNING: Mode 3 requires --headers_file argument")
-        logger.info("Proceeding without headers - will use fallback header generation (currently: '@seq')")
+        logger.info("Proceeding without headers - will use fallback header generation")
     
     # Get file size without mmap
     file_size = os.path.getsize(input_path)
@@ -1229,8 +1238,7 @@ def reconstruct_fastq(input_path: str, output_path: str,
     
     logger.info(f"Using {num_workers} worker processes for parallel reconstruction")
     
-    # Read only the header portion for metadata parsing
-    HEADER_READ_SIZE = 10 * 1024 * 1024  # Read first 10MB for headers
+    HEADER_READ_SIZE = 10 * 1024 * 1024  
     with open(input_path, 'rb') as f:
         header_data = f.read(HEADER_READ_SIZE)
     
@@ -1403,10 +1411,10 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 # Find boundary based on mode
                 if mode == 3:
                     # Mode 3 splits on 255 markers
-                    last_marker = search_region.rfind(b'\xff', 0, chunk_end - search_start)
+                    last_marker = search_region.rfind(b'\n\xff', 0, chunk_end - search_start)
                     
                     if last_marker != -1:
-                        chunk_end = search_start + last_marker
+                        chunk_end = search_start + last_marker + 1
                 
                 elif mode == 2 and safe_mode_flag:
                     # Safe mode splits on validated @header\xff pattern
@@ -1475,9 +1483,25 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 if pos >= buffer_len:
                     break
 
-    logger.info("Reconstructing FASTQ with parallel processing...")
-    total_sequences = 0  
-    
+    logger.info("Reconstructing FASTQ...")
+
+    chunks_list = []
+    current_seq_idx = 0
+
+    for chunk_data in chunk_generator():
+        chunk_id, abs_start, abs_end, _ = chunk_data 
+        
+        with open(input_path, 'rb') as f:
+            f.seek(abs_start)
+            chunk_size = abs_end - abs_start
+            chunk_bytes = f.read(chunk_size)
+            actual_count = chunk_bytes.count(b'\xff') 
+        
+        chunks_list.append((chunk_id, abs_start, abs_end, current_seq_idx))
+        current_seq_idx += actual_count
+
+    total_sequences = 0
+
     with open(output_path, 'wb', buffering=chunk_size_bytes) as outfile:
         with Pool(processes=num_workers) as pool:
             worker_func = partial( 
@@ -1498,10 +1522,10 @@ def reconstruct_fastq(input_path: str, output_path: str,
                 safe_mode_flag=safe_mode_flag
             )
             
-            for chunk_id, processed_bytes, count in pool.imap(worker_func, chunk_generator(), chunksize=1):
+            for chunk_id, processed_bytes, count in pool.imap(worker_func, chunks_list, chunksize=1):
                 outfile.write(processed_bytes)
                 total_sequences += count
-    
+
     logger.info(f"\nTotal sequences reconstructed: {total_sequences:,}")
     logger.info(f"Output saved to: {output_path}")
 
