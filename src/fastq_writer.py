@@ -99,8 +99,7 @@ def process_and_write_records(records: List[FASTQRecord], outfile, base_map: np.
         if binary:
             outfile.write(seq_data.tobytes())
             # Mode 3 doesn't have newlines between sequences, other modes do
-            if mode != 3:
-                outfile.write(b'\n')
+            outfile.write(b'\n')
         else:
             if keep_bases:
                 outfile.write(seq_data.tobytes())  # Write ASCII directly
