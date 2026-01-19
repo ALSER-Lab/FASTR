@@ -1,6 +1,5 @@
 import io
 import os
-import sys
 import tempfile
 import numpy as np
 import time
@@ -10,7 +9,6 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from multiprocessing import Pool
 from functools import partial
-import mmap
 import cProfile
 import pstats
 from io import StringIO
@@ -842,20 +840,18 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
             # @header\nBASES\n+\nQUALITY\n
             sequences_in_chunk = 0
             cursor = 0
+            chunk_size = abs_end - abs_start
             
-            while cursor < len(data):
-                if cursor >= (abs_end - abs_start) and sequences_in_chunk > 0:
-                    break
-                
+            while cursor < chunk_size:
                 if data[cursor:cursor+1] != b'@':
                     # Try to find next @ 
-                    next_at = data.find(b'@', cursor, min(len(data), cursor + 10000))
+                    next_at = data.find(b'@', cursor, min(len(data), chunk_size + MAX_CHUNK_EXTENSION))
                     if next_at == -1:
                         break
                     cursor = next_at
                 
                 line1_end = data.find(b'\n', cursor) # Header
-                if line1_end == -1:
+                if line1_end == -1 or line1_end >= len(data):
                     break
                 
                 compressed_header = data[cursor+1:line1_end].decode('utf-8', errors='replace').strip()
@@ -865,13 +861,14 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 bases_len = 0
                 line3_start = -1
                 bases_parts = []
+                
                 while seq_cursor < len(data):
-                    line_end = data.find(b'\n', seq_cursor, min(len(data), seq_cursor + 100000))
+                    line_end = data.find(b'\n', seq_cursor)
                     if line_end == -1:
                         break
                     
                     next_line_start = line_end + 1
-                    if next_line_start < len(data) and data[next_line_start:next_line_start+1] == b'+': # Read until we find +
+                    if next_line_start < len(data) and data[next_line_start:next_line_start+1] == b'+':
                         bases_parts.append(data[seq_cursor:line_end])
                         bases_len = sum(len(p) for p in bases_parts)
                         line3_start = next_line_start
@@ -881,12 +878,10 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     seq_cursor = line_end + 1
                 
                 if line3_start == -1:
-                    # Didn't find +
                     break
                 
                 bases_line = b''.join(bases_parts).decode('utf-8', errors='replace').strip()
-                
-                line3_end = data.find(b'\n', line3_start) # Line 3: + (with or without header repetition)
+                line3_end = data.find(b'\n', line3_start) # Line 3
                 if line3_end == -1:
                     break
                 
@@ -896,7 +891,6 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     cursor = line3_end + 1
                     continue
                 
-                # Lines 4+: quality (assume equal size to bases, may span multiple lines)
                 line4_start = line3_end + 1
                 line4_end = line4_start + bases_len
                 
@@ -905,15 +899,8 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                 
                 quality_line = data[line4_start:line4_end].decode('utf-8', errors='replace')
                 
-                # Parse pair number if present
-                pair_number = 0
                 unique_id = compressed_header
-                if '/' in compressed_header:
-                    parts = compressed_header.rsplit('/', 1)
-                    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 1:
-                        unique_id = parts[0]
-                        pair_number = int(parts[1])
-
+                
                 # Check for metadata block changes
                 if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
                     next_metadata = metadata_blocks[current_metadata_idx + 1]
@@ -1343,15 +1330,13 @@ def reconstruct_fastq(input_path: str, output_path: str,
         chunk_id = 0
         start_seq_idx = 0
         
-        # For mode 0, we need to build an index first
         if mode == 0:
             logger.info("Mode 0: Building record index...")
-            record_positions = [data_start_byte]  # Start of first record
+            record_positions = [data_start_byte]
             
             with open(input_path, 'rb') as f:
                 f.seek(data_start_byte)
-                # Read in large blocks to build index
-                SCAN_BLOCK_SIZE = 50 * 1024 * 1024  # 50MB blocks for scanning
+                SCAN_BLOCK_SIZE = 50 * 1024 * 1024
                 buffer = b''
                 file_pos = data_start_byte
                 
@@ -1362,16 +1347,12 @@ def reconstruct_fastq(input_path: str, output_path: str,
                     
                     buffer += chunk
                     cursor = 0
-                    
+                    # We run off the assumption each fastq record is exactly 4 lines, so we'll count...
                     while cursor < len(buffer):
-                        # Check if we have enough data for a complete record
-                        if len(buffer) - cursor < 1000 and chunk:  # Keep some buffer
-                            break
                         
                         if buffer[cursor:cursor+1] != b'@':
                             cursor += 1
                             continue
-                        
                         line1_end = buffer.find(b'\n', cursor)
                         if line1_end == -1:
                             break
@@ -1400,37 +1381,56 @@ def reconstruct_fastq(input_path: str, output_path: str,
                         cursor = line4_end
                         if cursor < len(buffer) and buffer[cursor:cursor+1] == b'\n':
                             cursor += 1
-                        
-                        record_positions.append(file_pos + cursor)
+                        if cursor < len(buffer):
+                            record_positions.append(file_pos + cursor)
                     
-                    # Keep unprocessed data
                     buffer = buffer[cursor:]
                     file_pos += cursor
             
             logger.info(f"Mode 0: Found {len(record_positions)} record boundaries")
             
-            # Generate chunks based on record boundaries
-            records_per_chunk = max(1, chunk_size_bytes // 50000)
+            target_bytes_per_chunk = chunk_size_bytes
+            current_chunk_start = 0
+            current_chunk_byte_count = 0
             
-            for i in range(0, len(record_positions), records_per_chunk):
-                abs_start = record_positions[i]
+            for i in range(len(record_positions)):
+                if i == 0:
+                    continue
                 
-                if i + records_per_chunk < len(record_positions):
-                    abs_end = record_positions[i + records_per_chunk]
+                record_start = record_positions[i-1]
+                record_end = record_positions[i] if i < len(record_positions) - 1 else file_size
+                record_bytes = record_end - record_start
+                
+                if (current_chunk_byte_count + record_bytes > target_bytes_per_chunk and 
+                    current_chunk_byte_count > 0): 
+                    
+                    abs_start = record_positions[current_chunk_start]
+                    abs_end = record_positions[i-1]
+                    seqs_in_chunk = (i-1) - current_chunk_start
+                    
+                    if verbose:
+                        logger.info(f"Yielding chunk {chunk_id}: {abs_start}-{abs_end} " +
+                                f"({abs_end-abs_start:,} bytes, {seqs_in_chunk} seqs)")
+                    
+                    yield (chunk_id, abs_start, abs_end, start_seq_idx) # If adding this record would exceed chunk size, yield current chunk
+                    
+                    start_seq_idx += seqs_in_chunk
+                    chunk_id += 1
+                    current_chunk_start = i-1
+                    current_chunk_byte_count = record_bytes
                 else:
-                    abs_end = file_size
-                
-                estimated_seqs = min(records_per_chunk, len(record_positions) - i)
+                    current_chunk_byte_count += record_bytes
+            
+            if current_chunk_start < len(record_positions):
+                abs_start = record_positions[current_chunk_start]
+                abs_end = file_size
+                seqs_in_chunk = len(record_positions) - current_chunk_start
                 
                 if verbose:
-                    logger.info(f"Yielding chunk {chunk_id}: {abs_start}-{abs_end} ({abs_end-abs_start} bytes, ~{estimated_seqs} seqs)")
+                    logger.info(f"Yielding final chunk {chunk_id}: {abs_start}-{abs_end} " +
+                            f"({abs_end-abs_start:,} bytes, {seqs_in_chunk} seqs)")
                 
-                yield (chunk_id, abs_start, abs_end, start_seq_idx)
-                
-                start_seq_idx += estimated_seqs
-                chunk_id += 1
-                if chunk_id % 10 == 0:
-                    logger.info(f"Read {chunk_id} chunks...")
+                yield (chunk_id, abs_start, abs_end, start_seq_idx) # Yield the final chunk
             
             return
         
