@@ -855,6 +855,7 @@ def process_chunk_worker_reconstruction(chunk_data, mmap_path, reverse_map, subt
                     break
                 
                 compressed_header = data[cursor+1:line1_end].decode('utf-8', errors='replace').strip()
+                pair_number = 0
                 
                 line2_start = line1_end + 1
                 seq_cursor = line2_start
