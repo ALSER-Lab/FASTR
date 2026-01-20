@@ -34,6 +34,7 @@ python main.py --help
 -----
 
 ## FASTQ to FASTR conversion usage:
+```bash
 usage: to_fastr.py [-h] [--mode INT] [--qual_scale STR] [--extract_qual INT]
                    [--phred_off INT] [--min_qual INT] [--custom_formula STR]
                    [--paired INT] [--paired_mode STR] [--seq_type STR]
@@ -105,7 +106,7 @@ PERFORMANCE & PARALLELIZATION:
   --chunk_mb INT        Chunk size in MB for parallel processing [8]
   --profile INT         Enable profiling (0/1) [0]
   --verbose INT         Enable verbose logging (0/1) [0]
-
+```
 
 ## FASTQ to FASTR conversion examples:
 ### FASTR Mode 0 Encoding
@@ -129,7 +130,7 @@ python FASTR-main/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode3.fast
 
 
 ## FASTR to FASTQ conversion usage:
-
+```bash
 usage: to_fastq.py [-h] [--mode INT] [--headers_file FILE]
                    [--phred_offset INT] [--phred_alphabet STR] [--gray_N INT]
                    [--gray_A INT] [--gray_G INT] [--gray_C INT] [--gray_T INT]
@@ -170,7 +171,7 @@ PERFORMANCE & PARALLELIZATION:
   --num_workers INT     Number of parallel workers [4]
   --verbose INT         Enable verbose logging (0/1) [0]
   --profile INT         Enable cProfile profiling (0/1) [0]
-
+```
 
 ## FASTR to FASTQ conversion examples:
 ### FASTR Mode 0 Dencoding
