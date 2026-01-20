@@ -195,7 +195,7 @@ typedef struct __kstring_t {
 		int c; \
 		kstream_t *ks = seq->f; \
 		if (seq->last_char == 0) { /* then jump to the next header line */ \
-			while ((c = ks_getc(ks)) != -1 && c != '>' && c != '@'); \
+			while ((c = ks_getc(ks)) != -1 && c != '>' && c != '@' && c != 0xFF); \
 			if (c == -1) return -1; /* end of file */ \
 			seq->last_char = c; \
 		} /* else: the first header char has been read in the previous call */ \
@@ -205,8 +205,25 @@ typedef struct __kstring_t {
 		if (seq->seq.s == 0) { /* we can do this in the loop below, but that is slower */ \
 			seq->seq.m = 256; \
 			seq->seq.s = (char*)malloc(seq->seq.m); \
+		} /* --- START OF FASTR MODIFICATION --- */ \
+		if (seq->last_char == '@') { \
+			int is_fastr = 0; /* Check if the comment or name ends with decimal 255 (0xFF) */  \
+			if (seq->comment.l > 0 && (unsigned char)seq->comment.s[seq->comment.l-1] == 255) { \
+				is_fastr = 1; \
+				seq->comment.s[--seq->comment.l] = '\0'; /* Strip 255 for downstream use */ \
+			} else if (seq->name.l > 0 && (unsigned char)seq->name.s[seq->name.l-1] == 255) { \
+				is_fastr = 1; \
+				seq->name.s[--seq->name.l] = '\0'; /* Strip 255*/ \
+			} \
+			if (is_fastr) { \
+				seq->seq.l = 0; /* Read the binary data line (0-254) until the newline*/ \
+				if (ks_getuntil(seq->f, KS_SEP_LINE, &seq->seq, &c) < 0) return -1; \
+				seq->qual.l = 0;    /* No quality scores in fastr */ \
+				seq->last_char = 0; /* Reset for the next record */ \
+				return seq->seq.l;  /* Return sequence length and exit function */ \
+			} \
 		} \
-		while ((c = ks_getc(ks)) != -1 && c != '>' && c != '+' && c != '@') { \
+		while ((c = ks_getc(ks)) != -1 && c != '>' && c != '+' && c != '@' && c != 0xFF) { \
 			if (c == '\n') continue; /* skip empty lines */ \
 			seq->seq.s[seq->seq.l++] = c; /* this is safe: we always have enough space for 1 char */ \
 			ks_getuntil2(ks, KS_SEP_LINE, &seq->seq, 0, 1); /* read the rest of the line */ \

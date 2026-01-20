@@ -121,53 +121,62 @@ mm_bseq1_t *mm_bseq_read3(mm_bseq_file_t *fp, int64_t chunk_size, int with_qual,
 		/* 254-255 (N) */
 		'N', 'N'
 	};
-	
 	// This is to avoid applying FASTR interpretation to FASTA files (first argument in minimap2)
 	static mm_bseq_file_t *first_fp = NULL;
     if (first_fp == NULL) first_fp = fp;
 	// --- END: ALSER changes to adapt to FASTR ---
-
-	while ((ret = kseq_read(ks)) >= 0) {
-		mm_bseq1_t *s;
-		assert(ks->seq.l <= INT32_MAX);
-		// --- START: ALSER changes to adapt to FASTR ---
-		//fprintf(stderr, "@@OLD\n%s\n%s\n", ks->name.s, ks->seq.s);
-		//char *out_buf = (char*)malloc(ks->seq.l + 1);
-		// Logic: If the current file pointer is NOT the first one, it's the second file.
-        if (fp != first_fp) {
-			//if (ks->comment.l) {
-				//if (out_buf) {
-				for (int i = 0; i < ks->seq.l; ++i) {
-					// Direct index lookup: 
-					ks->seq.s[i] = map_table[(uint8_t)ks->seq.s[i]];
-				}
-
-				// Write the entire translated sequence in one go
-				//fputc('\n', stderr);
-				//fwrite(out_buf, 1, ks->seq.l, stderr);
-				//fputc('\n', stderr);
-				//}
-			//}
-		}
-		//free(out_buf);
-		//fprintf(stderr, "@@NEW\n%s\n%s\n", ks->name.s, ks->seq.s);
-		// --- END: ALSER changes to adapt to FASTR ---
-
-		if (a.m == 0) kv_resize(mm_bseq1_t, 0, a, 256);
-		kv_pushp(mm_bseq1_t, 0, a, &s);
-		kseq2bseq(ks, s, with_qual, with_comment);
-		size += s->l_seq;
-		if (size >= chunk_size) {
-			if (frag_mode && a.a[a.n-1].l_seq < CHECK_PAIR_THRES) {
-				while ((ret = kseq_read(ks)) >= 0) {
-					kseq2bseq(ks, &fp->s, with_qual, with_comment);
-					if (mm_qname_same(fp->s.name, a.a[a.n-1].name)) {
-						kv_push(mm_bseq1_t, 0, a, fp->s);
-						memset(&fp->s, 0, sizeof(mm_bseq1_t));
-					} else break;
-				}
+	if (fp != first_fp) {// --- START: ALSER changes to adapt to FASTR --- // ---END
+		while ((ret = kseq_read(ks)) >= 0) {
+			mm_bseq1_t *s;
+			assert(ks->seq.l <= INT32_MAX);
+			// --- START: ALSER changes to adapt to FASTR ---
+			// Check if it is not the first parameter (FASTA), then it is a FASTQ
+			//fprintf(stderr,"@@OLD\n%s\n%s\n", ks->name.s, ks->seq.s);
+			for (int i = 0; i < ks->seq.l; ++i) {
+				// Direct index lookup: 
+				ks->seq.s[i] = map_table[(uint8_t)ks->seq.s[i]];
 			}
-			break;
+			//fprintf(stderr,"@@NEW\n%s\n%s\n", ks->name.s, ks->seq.s);
+			// --- END: ALSER changes to adapt to FASTR ---
+
+			if (a.m == 0) kv_resize(mm_bseq1_t, 0, a, 256);
+			kv_pushp(mm_bseq1_t, 0, a, &s);
+			kseq2bseq(ks, s, with_qual, with_comment);
+			size += s->l_seq;
+			if (size >= chunk_size) {
+				if (frag_mode && a.a[a.n-1].l_seq < CHECK_PAIR_THRES) {
+					while ((ret = kseq_read(ks)) >= 0) {
+						kseq2bseq(ks, &fp->s, with_qual, with_comment);
+						if (mm_qname_same(fp->s.name, a.a[a.n-1].name)) {
+							kv_push(mm_bseq1_t, 0, a, fp->s);
+							memset(&fp->s, 0, sizeof(mm_bseq1_t));
+						} else break;
+					}
+				}
+				break;
+			}
+		}
+	}
+	else{
+		while ((ret = kseq_read(ks)) >= 0) {
+			mm_bseq1_t *s;
+			assert(ks->seq.l <= INT32_MAX);
+			if (a.m == 0) kv_resize(mm_bseq1_t, 0, a, 256);
+			kv_pushp(mm_bseq1_t, 0, a, &s);
+			kseq2bseq(ks, s, with_qual, with_comment);
+			size += s->l_seq;
+			if (size >= chunk_size) {
+				if (frag_mode && a.a[a.n-1].l_seq < CHECK_PAIR_THRES) {
+					while ((ret = kseq_read(ks)) >= 0) {
+						kseq2bseq(ks, &fp->s, with_qual, with_comment);
+						if (mm_qname_same(fp->s.name, a.a[a.n-1].name)) {
+							kv_push(mm_bseq1_t, 0, a, fp->s);
+							memset(&fp->s, 0, sizeof(mm_bseq1_t));
+						} else break;
+					}
+				}
+				break;
+			}
 		}
 	}
 	if (ret < -1) {
