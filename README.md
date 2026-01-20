@@ -33,133 +33,173 @@ python main.py --help
 
 -----
 
-## Usage
+## FASTQ to FASTR conversion usage:
+usage: to_fastr.py [-h] [--mode INT] [--qual_scale STR] [--extract_qual INT]
+                   [--phred_off INT] [--min_qual INT] [--custom_formula STR]
+                   [--paired INT] [--paired_mode STR] [--seq_type STR]
+                   [--compress_hdr INT] [--sra_acc STR] [--multi_flow INT]
+                   [--rm_repeat_hdr INT] [--adaptive_sample INT]
+                   [--mode3_headers STR] [--gray_N INT] [--gray_A INT]
+                   [--gray_G INT] [--gray_C INT] [--gray_T INT]
+                   [--bin_write INT] [--keep_bases INT] [--keep_qual INT]
+                   [--phred_alpha STR] [--second_head INT] [--safe_mode INT]
+                   [--workers INT] [--chunk_mb INT] [--profile INT]
+                   [--verbose INT]
+                   FILE FILE
 
-### Basic Command
+Convert and compress FASTQ/FASTA files to FASTR format.
 
+positional arguments:
+  FILE                  Path of .fasta or .fastq file
+  FILE                  Output file path
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --mode3_headers STR   Path to headers file for mode 3 reconstruction (read mode) [null]
+
+OPERATION MODES:
+  --mode INT            0: Header compression only
+                        1: Base conversion into numbers only
+                        2: Header and base conversion, written out in two lines
+                        3: Repeating header removal entirely, base conversion kept, written out in one line
+
+QUALITY SCALING:
+  --qual_scale STR      Quality scaling method. Available options: {'log', 'log_reverse', 'log_custom', 'one_hot', 'custom'} [one_hot]
+  --extract_qual INT    For FASTQ: extract quality scores (0/1) [1]
+  --phred_off INT       Phred quality offset [33]
+  --min_qual INT        Clamped minimum quality score threshold [0]
+  --custom_formula STR  Custom formula for quality scaling (use 'x' for quality score). Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'
+
+PAIRED-END:
+  --paired INT          Paired-end reads flag (0/1) [0]
+  --paired_mode STR     Output mode for paired-end reads. Available options: {'same_file', 'separate_files'} [same_file]
+
+SEQUENCER & HEADERS:
+  --seq_type STR        Sequencer type for header compression. [adaptive]
+                        Standard: {'illumina', 'pacbio_hifi', 'pacbio_clr', 'ont', 'sra', 'old_illumina'}
+                        SRA Hybrid: {'illumina_sra', 'pacbio_hifi_sra', 'pacbio_clr_sra', 'ont_sra'}
+  --compress_hdr INT    Compress FASTQ headers on-the-fly (0/1) [0]
+  --sra_acc STR         SRA accession number (e.g., SRR12345678) [null]
+  --multi_flow INT      Enable multiple flowcell detection and tracking (0/1) [0]
+  --rm_repeat_hdr INT   Remove repeating metadata from headers, store only at top (0/1) [0]
+  --adaptive_sample INT
+                        Number of headers to analyze for adaptive pattern detection [10]
+
+ENCODING & GRAYSCALE:
+  --gray_N INT          Grayscale value for N [0]
+  --gray_A INT          Grayscale value for A [3]
+  --gray_G INT          Grayscale value for G [66]
+  --gray_C INT          Grayscale value for C [129]
+  --gray_T INT          Grayscale value for T [192]
+
+OUTPUT FORMAT:
+  --bin_write INT       Enable binary writing of sequence integers (0/1) [1]
+  --keep_bases INT      Return textual bases without scaling or one-hot encoding (0/1) [0]
+  --keep_qual INT       Keep original quality scores in output (0/1) [0]
+  --phred_alpha STR     Phred quality (q-score) ascii character alphabet used by input (phred42, phred63, phred94) [phred94]
+  --second_head INT     Repeat the header on the '+' line in the FASTQ output.
+  --safe_mode INT       Enable safe mode for modes 1 and 2 (adds 255 marker after headers) (0/1) [1]
+
+PERFORMANCE & PARALLELIZATION:
+  --workers INT         Number of parallel workers (use 4+ for large files >5GB) [1]
+  --chunk_mb INT        Chunk size in MB for parallel processing [8]
+  --profile INT         Enable profiling (0/1) [0]
+  --verbose INT         Enable verbose logging (0/1) [0]
+
+
+## FASTQ to FASTR conversion examples:
+### FASTR Mode 0 Encoding
 ```bash
-python main.py [INPUT_PATH] [OUTPUT_PATH] [FLAGS]
+python FASTR-main/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+```
+### FASTR Mode 1 Encoding
+```bash
+python FASTR-main/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode1.fastr  --mode 1 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+```
+### FASTR Mode 2 Encoding
+```bash
+python FASTR-main/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+```
+### FASTR Mode 3 Encoding
+```bash
+python FASTR-main/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
 ```
 
-### Quick Start Modes
 
-The `--mode` argument provides a shorthand for setting complex flag combinations.
 
-| Mode | ID | Description | Logic Applied |
-| :--- | :---: | :--- | :--- |
-| **Header Only** | `1` | Header compression only. | `compress_headers=1`, `binary_write=0` |
-| **Bases Only** | `2` | Base conversion into numbers only. | `compress_headers=0`, `binary_write=1` |
-| **Standard** | `3` | Header + Base conversion (2 lines). | `compress_headers=1`, `binary_write=1` |
-| **Compact** | `4` | Removes repeating header metadata; 1 line output. | `compress_headers=1`, `remove_repeating=1`, `binary_write=1` |
 
------
+## FASTR to FASTQ conversion usage:
 
-## Detailed Configuration
+usage: to_fastq.py [-h] [--mode INT] [--headers_file FILE]
+                   [--phred_offset INT] [--phred_alphabet STR] [--gray_N INT]
+                   [--gray_A INT] [--gray_G INT] [--gray_C INT] [--gray_T INT]
+                   [--chunk_size_mb INT] [--num_workers INT] [--verbose INT]
+                   [--profile INT]
+                   FILE FILE
 
-### 1\. Paired-End & SRA
+Reconstruct FASTQ files from FASTR.
 
-Handle paired-end sequencing data or specific SRA accessions.
+positional arguments:
+  FILE                  Path to FASTR compressed file
+  FILE                  Output FASTQ file path
 
-| Flag | Type | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `--paired_end` | int | 0 | Set to `1` if input contains paired-end reads. |
-| `--paired_end_mode` | str | `same_file` | Output strategy: `same_file` or `separate_files`. |
-| `--sra_accession` | str | None | Explicit SRA accession number (e.g., SRR12345678). |
+optional arguments:
+  -h, --help            show this help message and exit
 
-### 2\. Header Compression
+RECONSTRUCTION MODE:
+  --mode INT            Reconstruction mode [2]
+                        0: Headers only (no base conversion)
+                        1: Bases only (keep original headers)
+                        2: Full reconstruction (headers + bases)
+                        3: No repeating headers (requires --headers_file)
+  --headers_file FILE   Path to headers file for mode 3 reconstruction [null]
 
-Options for reducing the footprint of sequence identifiers.
+QUALITY RECONSTRUCTION:
+  --phred_offset INT    Phred quality offset for output [33]
+  --phred_alphabet STR  Override phred alphabet from metadata (phred42/phred63/phred94) [auto]
 
-| Flag | Type | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `--compress_headers` | int | 0 | Enable on-the-fly header compression (0/1). |
-| `--sequencer_type` | str | `none` | Optimization target: `illumina`, `pacbio`, `ont`, `srr`. |
-| `--multiple_flowcells` | int | 0 | Enable detection/tracking of multiple flowcells. |
-| `--remove_repeating_header`| int | 0 | Strip repeating metadata, storing it only once at the top of the file. |
+GRAYSCALE DECODING:
+  --gray_N INT          Grayscale value for N [0]
+  --gray_A INT          Grayscale value for A [3]
+  --gray_G INT          Grayscale value for G [66]
+  --gray_C INT          Grayscale value for C [129]
+  --gray_T INT          Grayscale value for T [192]
 
-### 3\. Base Mapping (Grayscale)
+PERFORMANCE & PARALLELIZATION:
+  --chunk_size_mb INT   Chunk size in MB for parallel processing [8]
+  --num_workers INT     Number of parallel workers [4]
+  --verbose INT         Enable verbose logging (0/1) [0]
+  --profile INT         Enable cProfile profiling (0/1) [0]
 
-Map nucleotides to specific integer values (0-255) for "DNA-as-Image" representations.
 
-| Nucleotide | Flag | Default Value |
-| :--- | :--- | :--- |
-| **N** | `--gray_N` | 1 |
-| **A** | `--gray_A` | 63 |
-| **T** | `--gray_T` | 127 |
-| **C** | `--gray_C` | 191 |
-| **G** | `--gray_G` | 255 |
-
-### 4\. Quality Score Processing
-
-Manipulate Phred quality scores using standard or custom math.
-
-| Flag | Type | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `--extract_quality` | int | 1 | Extract quality scores (0/1). |
-| `--phred_offset` | int | 33 | The Phred offset (usually 33 or 64). |
-| `--min_quality` | int | 0 | Threshold for minimum quality score. |
-| `--phred_alphabet` | str | `phred42` | Input alphabet: `phred42`, `phred63`, `phred94`. |
-| `--quality_scaling` | str | `none` | Scaling method: `log`, `log_custom`, `custom`. |
-| `--custom_formula` | str | None | **Required** if scaling is `custom`. Use `x` as the variable. |
-| `--log_a` | int | 0 | Tunable variable `a` for the `log_custom` function. |
-
-**Custom Formula Examples:**
-
+## FASTR to FASTQ conversion examples:
+### FASTR Mode 0 Dencoding
 ```bash
-# Linear scaling
---quality_scaling custom --custom_formula "1 + 62 * (x - 40) / 53"
-
-# Logarithmic scaling
---quality_scaling custom --custom_formula "ln(x) * 10"
+python FASTR-main/src/to_fastq.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --num_workers 16 --phred_alpha phred94
+```
+### FASTR Mode 1 Dencoding
+```bash
+python FASTR-main/src/to_fastq.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --num_workers 16 --phred_alpha phred94
+```
+### FASTR Mode 2 Dencoding
+```bash
+python FASTR-main/src/to_fastq.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --num_workers 16 --phred_alpha phred94
+```
+### FASTR Mode 3 Dencoding
+```bash
+python FASTR-main/src/to_fastq.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --num_workers 16 --phred_alpha phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
 ```
 
-### 5\. Output Format
 
-Control how the data is written to disk.
+## Citation:
+If you use FASTR in your work, please cite:
+> Adrian Tkachenko, Sepehr Salem, Ayotomiwa Ezekiel Adeniyi, Zulal Bingol, Mohammed Nayeem Uddin, Akshat Prasanna, Alexander Zelikovsky, Serghei Mangul, Can Alkan and Mohammed Alser. 
+> "FASTR: Reimagining FASTQ via Compact Image-inspired Representation" 
+> arXiv (2026). [link](https://doi.org/).
 
-| Flag | Type | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `--binary_write` | int | 1 | Write sequence integers as binary (1) or text (0). |
-| `--keep_bases` | int | 0 | Return raw ASCII bases (A, T, C, G) without scaling. |
-| `--binary_bases` | int | 0 | Use compact binary encoding for bases (A=0, T=1, etc). |
-| `--keep_quality` | int | 0 | Keep original quality scores in output. |
-| `--binary_quality` | int | 0 | Write quality scores as binary numeric values. |
 
-> **Note:** You cannot use `--keep_bases 1` and `--binary_bases 1` simultaneously.
+Below is bibtex format for citation.
 
-### 6\. Performance
+```bibtex
 
-Optimize the script for your hardware.
-
-| Flag | Type | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `--num_workers` | int | 1 | Number of parallel workers. **Recommended 4+ for files \>5GB.** |
-| `--profile` | int | 0 | Enable `cProfile` to debug performance bottlenecks. |
-
------
-
-## Examples
-
-**1. Quick Compression (Header + Base conversion):**
-
-```bash
-python main.py input.fastq output.bin --mode 3
 ```
-
-**2. Prepare for Machine Learning (Grayscale + Custom Quality):**
-
-```bash
-python main.py data.fastq train_data.bin \
-  --mode 2 \
-  --quality_scaling custom \
-  --custom_formula "x / 40.0" \
-  --gray_A 50 --gray_T 100 --gray_C 150 --gray_G 200
-```
-
-**3. Large File Processing (Multiprocessing):**
-
-```bash
-python main.py big_genome.fastq output.bin --mode 4 --num_workers 8
-```
-
------
