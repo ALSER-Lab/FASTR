@@ -1,118 +1,55 @@
 # FASTQ Compression Benchmark
-Reproducible scripts for benchmarking compression and decompression of FASTQ files across general-purpose, fastq-specific  and fastq-alternative tools.
+Reproducible scripts for benchmarking compression and decompression of FASTQ files across general-purpose, fastq-specific and fastq-alternative tools.
 
-Compatible with any FASTQ-like text input.
 
 ---
 
-## Overview
+## Create Conda environment with all tools that we installed:
 
-These scripts compresses input FASTQ, decompresses the file and logs the run details to disk which is also appended as metrics to a TSV file.
-
-All measurements use `/usr/bin/time` for wall-clock timing and peak memory (Max RSS). 
 ```
-.
-├── scripts/
-│   ├── spring.sh
-│   ├── gzip.sh
-│   ├── bzip2.sh
-│   ├── xz.sh
-│   ├── bsc.sh
-│   ├── zstd.sh
-│   ├── zip.sh
-│   ├── pigz.sh
-│   ├── renano.sh
-│   └── sam.sh
-│── <tool>-output/
-│       ├── logs/
-│       │   ├── metrics.tsv
-│       │   └── <tool>_<timestamp>.log
-│       └── <run artifacts>
-└── README.md
+conda env create -f environment.yml
 ```
----
 
-## Metrics Schema
+## Activate the environment
 
-Each run appends one row to `metrics.tsv`:
-| Column | Description |
-|--------|-------------|
-| `tool` | Tool identifier (e.g., `spring`, `gzip`) |
-| `run_id` | Timestamp (`YYYYMMDD_HHMMSS`) |
-| `threads_requested` | Threads requested (even if tool ignores it) |
-| `thread_flag_compress` | Flag used for compression threads (`-t`, `-T`, `-@`, or `NA`) |
-| `thread_flag_decompress` | Flag used for decompression threads |
-| `mt_compress` | `1` if compression supports multithreading, else `0` |
-| `mt_decompress` | `1` if decompression supports multithreading, else `0` |
-| `compression_time_s` | Wall time for compression (seconds) |
-| `compressed_size_mb` | Compressed output size (MiB) |
-| `compression_ratio` | `input_raw_bytes / compressed_bytes` |
-| `peak_mem_compress_mb` | Peak RSS during compression (MiB) |
-| `decompression_time_s` | Wall time for decompression (seconds) |
-| `decompressed_size_mb` | Decompressed output size (MiB) |
-| `peak_mem_decompress_mb` | Peak RSS during decompression (MiB) |
-| `input_matches_decompressed` | `1` if byte-stream comparison passes, else `0` |
-
-**Note on validation:** We use `cmp -s` for strict byte-stream comparison. Tools that reorder reads (e.g., reference-based CRAM) or apply lossy compression will return `0` even if scientifically valid.
-
----
-
-## Installation
-
-### Via Conda (Recommended)
-```bash
-conda create -n fastq_bench -c conda-forge -c bioconda \
-  spring gzip bzip2 xz zstd pigz bsc zip unzip samtools picard
+```
+source ~/anaconda3/bin/activate root
 
 conda activate fastq_bench
 ```
-
-### Verify Installation
-```bash
-command -v spring gzip bzip2 xz zstd pigz bsc zip samtools >/dev/null && echo "OK"
+## Download the data
 ```
----
+fasterq-dump SRR33464820
 
-## Usage
+fasterq-dump ERR15909551
 
-### Running a Benchmark
-
-Each tool has a wrapper script with consistent arguments:
-```bash
-./scripts/.sh \
-  --input <path/to/input.fastq> \
-  --threads  \
-  --tmpdir /tmp \
-  --out-prefix <output/path/prefix>
+fasterq-dump ERR13491966
 ```
 
-### Example: SPRING
-```bash
-./scripts/spring.sh \
-  --input ./fastq_files/D1_S1_L001_R1_001-017.fastq \
-  --threads 32 \
-  --tmpdir /tmp \
-  --out-prefix ./outputs/spring-output/run_001
+## Download Human genome
+https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_000001405.40/
+
+## Run compression tools
+Use the sbatch jobs inside the 3 compression files, be careful with dependencies (e.g., FASTR mode 2 must be generated before running pigz on FASTR mode 2)
+
+## Run decompression tools
+Use the sbatch jobs inside the 3 decompression files, be careful with dependencies (e.g., pigz on FASTR mode 2 must be generated before running pigz decompression)
+
+## Run minimap2, SAM, BAM, CRAM tools
+Use the minimap2 shell script and be careful with dependencies
+
+## Collect all results
+To build a nice summary table of all results:
 ```
 
-**Outputs:**
+cd /work1/malser/mohammedalser/ont-SRR33464820-results/
+awk -F': ' 'BEGIN{print "Filename,Total_CPU_Sec,Peak_Mem_KB"} /User time/{u=$2} /System time/{s=$2} /Maximum resident/{print FILENAME "," u+s "," $2}' *.txt > ONT-SRR33464820-performance_summary.csv
 
-- `./outputs/spring-output/run_001.spring` — compressed file
-- `./outputs/spring-output/run_001.dec.fastq` — decompressed file
-- `./outputs/spring-output/logs/spring_<timestamp>.log` — full log
-- `./outputs/spring-output/logs/metrics.tsv` — metrics row appended
+echo "Filename,SizeBytes" > ONT-SRR33464820-size_summary.csv && find . -maxdepth 1 -type f ! -name "*.txt" -printf "%f,%s\n" >> ONT-SRR33464820-size_summary.csv
 
----
+python /work1/malser/mohammedalser/FASTR-main/merger.py ONT-SRR33464820-size_summary.csv ONT-SRR33464820-performance_summary.csv ONT-SRR33464820-results.csv SRR33464820 ont
+```
 
-## Measurement Methods
+Enjoy it!
 
-| Metric | Method |
-|--------|--------|
-| Wall time | `/usr/bin/time -f "%e"` (seconds) |
-| Peak memory | `/usr/bin/time -f "%M"` (KB → MiB) |
-| File size | `stat -c%s <file>` |
-| Compression ratio | `input_raw_bytes / compressed_bytes` |
 
-For `.gz` inputs, raw size is measured via `gzip -cd input.fastq.gz | wc -c`.
-
----
