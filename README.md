@@ -173,19 +173,19 @@ PERFORMANCE & PARALLELIZATION:
 ```
 
 ## FASTR to FASTQ conversion examples:
-### FASTR Mode 0 Dencoding
+### FASTR Mode 0 Decoding
 ```bash
 python FASTR/src/to_fastq.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --num_workers 16 --phred_alpha phred94
 ```
-### FASTR Mode 1 Dencoding
+### FASTR Mode 1 Decoding
 ```bash
 python FASTR/src/to_fastq.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --num_workers 16 --phred_alpha phred94
 ```
-### FASTR Mode 2 Dencoding
+### FASTR Mode 2 Decoding
 ```bash
 python FASTR/src/to_fastq.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --num_workers 16 --phred_alpha phred94
 ```
-### FASTR Mode 3 Dencoding
+### FASTR Mode 3 Decoding
 ```bash
 python FASTR/src/to_fastq.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --num_workers 16 --phred_alpha phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
 ```
