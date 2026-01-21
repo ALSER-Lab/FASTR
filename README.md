@@ -23,10 +23,11 @@ FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality 
 
 ## Installation
 
-Ensure you have Python 3.x installed. The tool relies on `numpy` for efficient array handling.
+Ensure you have Python 3.x installed. The tool relies on `numpy` and `numba` for efficient array handling.
 
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
+pip install -r requirements.txt
 cd FASTR/src
 python main.py --help
 ```
@@ -51,7 +52,7 @@ usage: to_fastr.py [-h] [--mode INT] [--qual_scale STR] [--extract_qual INT]
 Convert and compress FASTQ/FASTA files to FASTR format.
 
 positional arguments:
-  FILE                  Path of .fasta or .fastq file
+  FILE                  Path of .fastq file
   FILE                  Output file path
 
 optional arguments:
