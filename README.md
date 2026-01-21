@@ -28,8 +28,6 @@ Ensure you have Python 3.x installed. The tool relies on `numpy` and `numba` for
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
 pip install -r requirements.txt
-cd FASTR/src
-python main.py --help
 ```
 
 -----
