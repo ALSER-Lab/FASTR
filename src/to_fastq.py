@@ -40,7 +40,8 @@ class MetadataBlock:
 
 def find_structure_prefix(structure_template: str) -> str:
     """
-    Extract the constant prefix from structure template before first {REPEATING_X}.
+    Find constant prefix from structure template before first {REPEATING_X} placeholder.
+    Returns: str prefix for header 
     """
     if not structure_template:
         return ""
@@ -65,7 +66,9 @@ def parse_metadata_header(
     data: bytes, mode: int
 ) -> Tuple[List[MetadataBlock], int, Optional[str], Optional[int]]:
     """
-    Parse metadata headers from the beginning of the file in order to reconstruct it later
+    Parse FASTR metadata headers to find reconstruction information.
+    Returns: (metadata_blocks, data_start_byte, sra_accession, phred_alphabet_max, 
+              detected_mode, length_flag, second_head_flag, safe_mode_flag)
     """
     metadata_blocks = []
     sra_accession = None
@@ -115,9 +118,6 @@ def parse_metadata_header(
 
                 if line.startswith("@"):
                     logger.info(f"Reached sequence headers at line {line_idx}")
-                    break
-
-                if line.startswith("<"):
                     break
 
                 if line.startswith("#MODE="):
@@ -227,7 +227,6 @@ def parse_metadata_header(
             safe_mode_flag,
         )
 
-    # Find the @ before the first < (where sequence actually starts)
     search_start = max(0, first_seq_marker - 1000)
     header_before_seq = data[search_start:first_seq_marker]
     last_at = header_before_seq.rfind(b"\n@")
@@ -352,7 +351,10 @@ def parse_metadata_header(
 
 
 def get_delimiter_for_sequencer(sequencer_type: str) -> str:
-    """Get the delimiter character used by each sequencer type"""
+    """
+    Get delimiter character for sequencer type.
+    Returns: ':' for Illumina/ONT, '/' for PacBio, ' ' for SRA
+    """
     if sequencer_type == "illumina" or sequencer_type == "old_illumina":
         return ":"
     elif sequencer_type.startswith("pacbio") and not sequencer_type.endswith("_sra"):
@@ -365,7 +367,10 @@ def get_delimiter_for_sequencer(sequencer_type: str) -> str:
 
 
 def parse_ont_unique_id(unique_id: str):
-    """Parse ONT unique_id which contains key=value pairs"""
+    """
+    Parse ONT unique_id containing key/value pairs separated by colons.
+    Returns: (prefix, key_value_dict)
+    """
     parts = unique_id.strip().split(":")
 
     if (
@@ -390,8 +395,9 @@ def reconstruct_header_from_structure(
     structure: str, unique_id: str, sequencer_type: str, pair_number: int = 0
 ) -> str:
     """
-    Reconstruct full header from structure template and unique ID.
-    For adaptive format, detects delimiter from structure.
+    Reconstruct full FASTQ header from structure template and shortened ID.
+    Formats used are: (Illumina, PacBio, ONT, SRA, adaptive).
+    Returns: Full header string starting with '@'
     """
     if sequencer_type == "adaptive":
         # Detect primary delimiter from structure
@@ -540,7 +546,10 @@ def reconstruct_header_from_structure(
 
 
 def build_formula_func(formula: str):
-    """Return a function f(x) that applies the custom formula."""
+    """
+    Create callable function from quality scaling formula string.
+    Returns: Function accepting nparray, returning scaled values
+    """
     cleaned = re.sub(r"^\s*f\s*\(\s*x\s*\)\s*=\s*", "", formula.strip()).replace(
         "^", "**"
     )
@@ -573,6 +582,10 @@ def build_formula_func(formula: str):
 
 
 def create_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
+    """
+    Create lookup table for subtracting base grayscale values during quality reconstruction.
+    Returns: np.ndarray of shape (256,) with int32 values
+    """
     base_table = np.zeros(256, dtype=np.int32)
     base_table[gray_N:gray_A] = gray_N
     base_table[gray_A:gray_G] = gray_A
@@ -585,6 +598,10 @@ def create_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
 
 
 def reverse_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
+    """
+    Create lookup table mapping grayscale values to ASCII base characters (N/A/G/C/T).
+    Returns: np.ndarray of shape (256,) with uint8 ASCII values
+    """
     reverse_map = np.full(256, ord("N"), dtype=np.uint8)  # Default to 'N'
     reverse_map[gray_N:gray_A] = ord("N")
     reverse_map[gray_A:gray_G] = ord("A")
@@ -598,6 +615,10 @@ def reverse_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
 
 @njit
 def reverse_scaling_to_quality(binary_values, subtract_table, inverse_table, max_phred):
+    """
+    Convert binary encoded values back to PHRED quality scores. Optimized w/ njit (so python objects are incompatible here)
+    Returns: np.ndarray of reconstructed PHRED quality scores
+    """
     y = binary_values - subtract_table[binary_values]
 
     # Clip between 0 and 63
@@ -625,6 +646,12 @@ def reverse_scaling_to_quality(binary_values, subtract_table, inverse_table, max
 
 @njit
 def build_inverse_quality_table(scaled_int_for_q, q_possible, max_range):
+    """
+    Build inverse lookup table for quality score reconstruction with gap-filling.
+    We use linear interpolation to fill gaps, making sure the CLOSEST value is preferred...
+    Optimized w/ njit (so python objects are incompatible here)
+    Returns: np.ndarray inverse lookup table mapping scaled values to quality scores
+    """
     inverse_table = np.full(max_range + 1, -1, dtype=np.int32)
 
     for i in range(q_possible.shape[0]):
@@ -671,6 +698,10 @@ def quality_to_ascii(quality_scores: np.ndarray, phred_offset: int = 33) -> byte
 
 
 def build_header_index(headers_file_path: str) -> str:
+    """
+    Build mmap index of header file offsets for fast random access.
+    Returns: (mmap_array, mmap_temp_path)
+    """
     logger.info(f"Building header index for {headers_file_path}...")
 
     line_count = 0
@@ -701,21 +732,6 @@ def build_header_index(headers_file_path: str) -> str:
 
     return offsets_mmap, mmap_path
 
-
-def get_header_by_index(
-    headers_file_path: str, index_array: np.ndarray, seq_idx: int
-) -> str:
-    """Get header by index"""
-    if seq_idx >= len(index_array):
-        return None
-
-    offset = int(index_array[seq_idx])
-    with open(headers_file_path, "rb") as hf:
-        hf.seek(offset)
-        header_line = hf.readline()
-        return header_line.decode("utf-8", errors="ignore").strip()
-
-
 def process_chunk_worker_reconstruction(
     chunk_data,
     mmap_path,
@@ -735,7 +751,9 @@ def process_chunk_worker_reconstruction(
     data_start_byte=None,
 ):
     """
-    Worker function that processes a single chunk of binary sequence data.
+    Worker function for parallel processing of FASTR chunks.
+    Handles modes 0-3: (0) headers only, (1) bases only, (2) full reconstruction, (3) no repeating headers.
+    Returns: (chunk_id, output_bytes, sequence_count)
     """
     try:
         chunk_id, abs_start, abs_end, start_seq_idx = chunk_data
@@ -1556,7 +1574,8 @@ def reconstruct_fastq(
     verbose: bool = False,
 ):
     """
-    Reconstruct FASTQ file from FASTR.
+    Main function to reconstruct FASTQ file from FASTR.
+    Coordinates parallel reconstruction w/ worker processes.
     """
     logger.info(f"Reading FASTR: {input_path}")
     logger.info(f"Reconstruction mode: {mode}")
@@ -1944,7 +1963,7 @@ def main():
 
     # Positional Arguments
     parser.add_argument(
-        "input_path", metavar="FILE", help="Path to FASTR compressed file"
+        "input_path", metavar="FILE", help="Path to FASTR file"
     )
     parser.add_argument("output_path", metavar="FILE", help="Output FASTQ file path")
 
