@@ -195,7 +195,7 @@ python FASTR/src/to_fastq.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mod
 If you use FASTR in your work, please cite:
 > Adrian Tkachenko, Sepehr Salem, Ayotomiwa Ezekiel Adeniyi, Zulal Bingol, Mohammed Nayeem Uddin, Akshat Prasanna, Alexander Zelikovsky, Serghei Mangul, Can Alkan and Mohammed Alser. 
 > "FASTR: Reimagining FASTQ via Compact Image-inspired Representation" 
-> arXiv (2026). [link](https://doi.org/).
+> bioRxiv (2026). [link](https://www.biorxiv.org/content/10.64898/2026.01.22.701172v1).
 
 
 Below is bibtex format for citation.
