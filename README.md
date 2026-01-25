@@ -23,39 +23,34 @@ FASTR transforms both textual DNA/RNA data (i.e., FASTQ) and their base quality 
 
 ## Installation
 
-Ensure you have Python 3.x installed. The tool relies on `numpy` and `numba` for efficient array handling.
+Ensure you have Python 3.x installed. The tool relies on `numpy` for efficient array handling.
 
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
-pip install -r requirements.txt
+pip install requirements.txt # Installs numpy and numba
+cd FASTR/src
+python toFASTR.py -h 
+python toFASTQ.py -h
 ```
 
 -----
 
 ## FASTQ to FASTR conversion usage:
 ```bash
-usage: to_fastr.py [-h] [--mode INT] [--qual_scale STR] [--extract_qual INT]
-                   [--phred_off INT] [--min_qual INT] [--custom_formula STR]
-                   [--paired INT] [--paired_mode STR] [--seq_type STR]
-                   [--compress_hdr INT] [--sra_acc STR] [--multi_flow INT]
-                   [--rm_repeat_hdr INT] [--adaptive_sample INT]
-                   [--mode3_headers STR] [--gray_N INT] [--gray_A INT]
-                   [--gray_G INT] [--gray_C INT] [--gray_T INT]
-                   [--bin_write INT] [--keep_bases INT] [--keep_qual INT]
-                   [--phred_alpha STR] [--second_head INT] [--safe_mode INT]
-                   [--workers INT] [--chunk_mb INT] [--profile INT]
-                   [--verbose INT]
-                   FILE FILE
+usage: toFASTR.py [-h] [--mode INT] [--qual_scale STR] [--extract_qual INT] [--phred_off INT] [--min_qual INT] [--custom_formula STR] [--paired INT] [--paired_mode STR] [--seq_type STR]
+                  [--compress_hdr INT] [--sra_acc STR] [--multi_flow INT] [--rm_repeat_hdr INT] [--adaptive_sample INT] [--mode3_headers STR] [--gray_N INT] [--gray_A INT] [--gray_G INT]
+                  [--gray_C INT] [--gray_T INT] [--bin_write INT] [--keep_bases INT] [--keep_qual INT] [--phred_alpha STR] [--second_head INT] [--safe_mode INT] [--threads INT]
+                  [--chunk_mb INT] [--profile INT] [--verbose INT]
+                  FILE FILE
 
 Convert and compress FASTQ/FASTA files to FASTR format.
 
 positional arguments:
-  FILE                  Path of .fastq file
+  FILE                  Path of .fasta or .fastq file
   FILE                  Output file path
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
-  --mode3_headers STR   Path to headers file for mode 3 reconstruction (read mode) [null]
 
 OPERATION MODES:
   --mode INT            0: Header compression only
@@ -84,6 +79,7 @@ SEQUENCER & HEADERS:
   --rm_repeat_hdr INT   Remove repeating metadata from headers, store only at top (0/1) [0]
   --adaptive_sample INT
                         Number of headers to analyze for adaptive pattern detection [10]
+  --mode3_headers STR   Path to headers file for mode 3 reconstruction (read mode) [null]
 
 ENCODING & GRAYSCALE:
   --gray_N INT          Grayscale value for N [0]
@@ -101,7 +97,7 @@ OUTPUT FORMAT:
   --safe_mode INT       Enable safe mode for modes 1 and 2 (adds 255 marker after headers) (0/1) [1]
 
 PERFORMANCE & PARALLELIZATION:
-  --workers INT         Number of parallel workers (use 4+ for large files >5GB) [1]
+  --threads INT         Number of parallel threads[1]
   --chunk_mb INT        Chunk size in MB for parallel processing [8]
   --profile INT         Enable profiling (0/1) [0]
   --verbose INT         Enable verbose logging (0/1) [0]
@@ -110,19 +106,19 @@ PERFORMANCE & PARALLELIZATION:
 ## FASTQ to FASTR conversion examples:
 ### FASTR Mode 0 Encoding
 ```bash
-python FASTR/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 1 Encoding
 ```bash
-python FASTR/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode1.fastr  --mode 1 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode1.fastr  --mode 1 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 2 Encoding
 ```bash
-python FASTR/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 3 Encoding
 ```bash
-python FASTR/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type illumina_sra --workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 
 
@@ -130,20 +126,17 @@ python FASTR/src/to_fastr.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --m
 
 ## FASTR to FASTQ conversion usage:
 ```bash
-usage: to_fastq.py [-h] [--mode INT] [--headers_file FILE]
-                   [--phred_offset INT] [--phred_alphabet STR] [--gray_N INT]
-                   [--gray_A INT] [--gray_G INT] [--gray_C INT] [--gray_T INT]
-                   [--chunk_size_mb INT] [--num_workers INT] [--verbose INT]
-                   [--profile INT]
-                   FILE FILE
+usage: toFASTQ.py [-h] [--mode INT] [--headers_file FILE] [--phred_offset INT] [--phred_alphabet STR] [--gray_N INT] [--gray_A INT] [--gray_G INT] [--gray_C INT] [--gray_T INT]
+                  [--chunk_size_mb INT] [--threads INT] [--verbose INT] [--profile INT]
+                  FILE FILE
 
 Reconstruct FASTQ files from FASTR.
 
 positional arguments:
-  FILE                  Path to FASTR compressed file
+  FILE                  Path to FASTR file
   FILE                  Output FASTQ file path
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
 
 RECONSTRUCTION MODE:
@@ -167,27 +160,27 @@ GRAYSCALE DECODING:
 
 PERFORMANCE & PARALLELIZATION:
   --chunk_size_mb INT   Chunk size in MB for parallel processing [8]
-  --num_workers INT     Number of parallel workers [4]
+  --threads INT         Number of parallel threads [1]
   --verbose INT         Enable verbose logging (0/1) [0]
   --profile INT         Enable cProfile profiling (0/1) [0]
 ```
 
 ## FASTR to FASTQ conversion examples:
-### FASTR Mode 0 Decoding
+### FASTR Mode 0 Dencoding
 ```bash
-python FASTR/src/to_fastq.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --num_workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --threads 16 --phred_alphabet phred94
 ```
-### FASTR Mode 1 Decoding
+### FASTR Mode 1 Dencoding
 ```bash
-python FASTR/src/to_fastq.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --num_workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --threads 16 --phred_alphabet phred94
 ```
-### FASTR Mode 2 Decoding
+### FASTR Mode 2 Dencoding
 ```bash
-python FASTR/src/to_fastq.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --num_workers 16 --phred_alpha phred94
+python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --threads 16 --phred_alphabet phred94
 ```
-### FASTR Mode 3 Decoding
+### FASTR Mode 3 Dencoding
 ```bash
-python FASTR/src/to_fastq.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --num_workers 16 --phred_alpha phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
+python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --threads 16 --phred_alphabet phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
 ```
 
 
@@ -203,3 +196,4 @@ Below is bibtex format for citation.
 ```bibtex
 
 ```
+
