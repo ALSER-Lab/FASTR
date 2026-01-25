@@ -10,12 +10,12 @@ from multiprocessing import Pool
 
 import numpy as np
 
-from base_mapping import create_base_map, reverse_base_map
-from header_indexing import build_header_index
-from metadata_parser import parse_metadata_header
-from quality_reconstruction import (build_formula_func,
-                                    build_inverse_quality_table)
-from reconstruction_worker import process_chunk_worker_reconstruction
+from toFASTQ_base_mapping import create_base_map, reverse_base_map
+from toFASTQ_header_indexing import build_header_index
+from toFASTQ_metadata_parser import parse_metadata_header
+from toFASTQ_quality_reconstruction import (build_formula_func,
+                                            build_inverse_quality_table)
+from toFASTQ_reconstruction_worker import process_chunk_worker_reconstruction
 
 logging.basicConfig(
     level=logging.INFO,
