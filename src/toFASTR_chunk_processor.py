@@ -35,7 +35,7 @@ def process_chunk_worker(
     verbose: bool = False,
 ):
     """
-    Worker function that parses FASTQ records and applies transformations.
+    Parse FASTQ records from a chunk and write to FASTR format.
 
     Returns:
         tuple: (chunk_id, processed_bytes, metadata, structure, delimiter, count, headers_data)

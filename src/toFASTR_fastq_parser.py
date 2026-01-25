@@ -22,7 +22,7 @@ def parse_fastq_records_from_buffer(
     adaptive_sample_size: int = 100,
 ) -> Tuple[List[FASTQRecord], bytes, Optional[Dict], Optional[str], Optional[str], int]:
     """
-    Parse FASTQ records from a buffer using vectorized operations.
+    Parse FASTQ records from a buffer w/ optional header compression.
     Returns (records, leftover_buffer, current_flowcell_metadata, structure_template, delimiter, num_records)
     """
 
