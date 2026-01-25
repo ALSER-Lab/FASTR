@@ -38,7 +38,7 @@ def reconstruct_fastq(input_path: str, output_path: str, mode=2, **kwargs):
     phred_alphabet_max = kwargs.get("phred_alphabet_max", None)
     phred_offset = kwargs.get("phred_offset", 33)
     chunk_size_mb = kwargs.get("chunk_size_mb", 8)
-    num_workers = kwargs.get("num_workers", 4)
+    num_workers = kwargs.get("threads", 1)
     mode3_headers_file = kwargs.get("mode3_headers_file", None)
     verbose = kwargs.get("verbose", False)
 
@@ -484,11 +484,11 @@ def main():
         help="Chunk size in MB for parallel processing [8]",
     )
     perf_group.add_argument(
-        "--num_workers",
+        "--threads",
         type=int,
         metavar="INT",
-        default=4,
-        help="Number of parallel workers [4]",
+        default=1,
+        help="Number of parallel threads [1]",
     )
     perf_group.add_argument(
         "--verbose",
@@ -541,7 +541,7 @@ def main():
         phred_alphabet_max=phred_alphabet_max,
         phred_offset=args.phred_offset,
         chunk_size_mb=args.chunk_size_mb,
-        num_workers=args.num_workers,
+        num_workers=args.threads,
         mode=args.mode,
         mode3_headers_file=args.headers_file,
         verbose=(args.verbose == 1),

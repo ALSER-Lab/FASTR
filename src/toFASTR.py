@@ -47,7 +47,7 @@ def convert_fastq_to_fastr(
     paired_end=False,
     paired_end_mode="same_file",
     chunk_size_mb=8,
-    num_workers=4,
+    num_workers=1,
     adaptive_sample_size=10,
     mode=None,
     mode3_input_headers=None,
@@ -601,7 +601,7 @@ def main():
         metavar="INT",
         help="Number of headers to analyze for adaptive pattern detection [10]",
     )
-    parser.add_argument(
+    seq_group.add_argument(
         "--mode3_headers",
         type=str,
         default=None,
@@ -687,11 +687,11 @@ def main():
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
     perf_group.add_argument(
-        "--workers",
+        "--threads",
         type=int,
         default=1,
         metavar="INT",
-        help="Number of parallel workers (use 4+ for large files >5GB) [1]",
+        help="Number of parallel threads[1]",
     )
     perf_group.add_argument(
         "--chunk_mb",
@@ -832,7 +832,7 @@ def main():
         phred_alphabet_max=phred_alphabet_max,
         paired_end=args.paired,
         paired_end_mode=args.paired_mode,
-        num_workers=args.workers,
+        num_workers=args.threads,
         chunk_size_mb=args.chunk_mb,
         adaptive_sample_size=args.adaptive_sample,
         mode=args.mode,
