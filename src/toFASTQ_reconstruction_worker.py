@@ -6,11 +6,12 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from base_mapping import create_base_map, reverse_base_map
 from data_structures import MetadataBlock
-from header_reconstruction import reconstruct_header_from_structure
-from metadata_parser import find_structure_prefix
-from quality_reconstruction import quality_to_ascii, reverse_scaling_to_quality
+from toFASTQ_base_mapping import create_base_map, reverse_base_map
+from toFASTQ_header_reconstruction import reconstruct_header_from_structure
+from toFASTQ_metadata_parser import find_structure_prefix
+from toFASTQ_quality_reconstruction import (quality_to_ascii,
+                                            reverse_scaling_to_quality)
 
 
 def process_chunk_worker_reconstruction(
