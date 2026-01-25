@@ -44,8 +44,10 @@ def build_formula_func(formula: str):
 def reverse_scaling_to_quality(binary_values, subtract_table, inverse_table, max_phred):
     """
     Convert binary encoded values back to PHRED quality scores.
+
     WARNING: This function is JIT-compiled with @njit. Do not use Python objects,
     lists, dicts, or advanced numpy operations. Only basic numpy arrays and operations are supported
+
     Returns: np.ndarray of reconstructed PHRED quality scores
     """
     y = binary_values - subtract_table[binary_values]

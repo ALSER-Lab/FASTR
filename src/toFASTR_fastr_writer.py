@@ -36,8 +36,7 @@ def process_and_write_records(
     safe_mode: bool = False,
 ):
     """
-    Process quality scaling on records and write to file.
-    Applies quality-based transformations and outputs in specified format.
+    Apply quality transformations to records and write to FASTR.
     """
     if not records:
         return
