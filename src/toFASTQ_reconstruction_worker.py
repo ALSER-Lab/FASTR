@@ -5,7 +5,6 @@ import traceback
 from typing import List, Optional, Tuple
 
 import numpy as np
-
 from data_structures import MetadataBlock
 from toFASTQ_base_mapping import create_base_map, reverse_base_map
 from toFASTQ_header_reconstruction import reconstruct_header_from_structure
@@ -894,7 +893,6 @@ def _process_mode_3(
                 header = f"@{sra_accession}.{sequence_count}"
             else:
                 header = f"@seq{sequence_count}"
-            logger.warning(f"Using fallback header for seq {sequence_count}: {header}")
 
         seq_array = np.frombuffer(seq_data, dtype=np.uint8)
         bases_array = reverse_map[seq_array]
