@@ -33,18 +33,18 @@ sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR
 
 
 #FASTR Mode 0 COMPRESSION
-sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode0-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode0-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/to_fastr.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
+sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode0-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode0-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/toFASTR.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
 
 
 #FASTR Mode 1 COMPRESSION
-sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode1-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode1-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/to_fastr.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode1.fastr --mode 1 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
+sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode1-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode1-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/toFASTR.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode1.fastr --mode 1 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
 
 #FASTR Mode 2 COMPRESSION
-sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode2-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode2-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/to_fastr.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
+sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode2-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode2-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/toFASTR.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
 
 
 #FASTR Mode 3 COMPRESSION
-sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode3-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode3-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/to_fastr.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
+sbatch -p mi2101x -N 1 -n 16 -t 12:00:00 -o "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode3-stats-command-out.txt" --wrap="\time -v --output "/work1/malser/mohammedalser/ont-SRR33464820-results/fastr_mode3-stats-time-memory.txt" python /work1/malser/mohammedalser/FASTR-main/src/toFASTR.py /work1/malser/mohammedalser/SRR33464820.fastq /work1/malser/mohammedalser/ont-SRR33464820-results/SRR33464820.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type ont_sra --workers 16 --phred_alpha phred94"
 
 
 #XZ COMPRESSION on FASTR MODE2
