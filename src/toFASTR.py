@@ -8,7 +8,6 @@ from functools import partial
 from multiprocessing import Pool
 
 import numpy as np
-
 from toFASTR_chunk_processor import chunk_generator, process_chunk_worker
 from toFASTR_header_compression import (format_metadata_header,
                                         metadata_dict_equals)
@@ -66,10 +65,20 @@ def convert_fastq_to_fastr(
     # Are we extracting/reading headers for mode 3?
     extract_headers = mode == 3 and mode3_input_headers is None
     read_headers = mode == 3 and mode3_input_headers is not None
-    if extract_headers:
-        headers_output_path = output_path.rsplit(".", 1)[0] + "_headers.txt"
-        logger.info(f"Mode 3: Extracting headers to {headers_output_path}")
 
+    if read_headers and not os.path.exists(mode3_input_headers):
+        logger.warning(f"Mode 3 headers file not found: {mode3_input_headers}")
+        logger.info(
+            f"Creating headers file at path: {mode3_input_headers}"
+        )  # Fix prev error where nonexisting mode 3 header path caused runtime error.
+        extract_headers = True
+        read_headers = False
+        headers_output_path = mode3_input_headers
+
+    if extract_headers:
+        if mode3_input_headers is None:
+            headers_output_path = output_path.rsplit(".", 1)[0] + "_headers.txt"
+        logger.info(f"Mode 3: Extracting headers to {headers_output_path}")
     elif read_headers:
         logger.info(f"Mode 3: Reading headers from {mode3_input_headers}")
 
