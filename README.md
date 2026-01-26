@@ -27,8 +27,9 @@ Ensure you have Python 3.x installed. The tool relies on `numpy` for efficient a
 
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
-pip install requirements.txt # Installs numpy and numba
-cd FASTR/src
+cd FASTR
+pip install -r requirements.txt # Installs numpy and numba
+cd src
 python toFASTR.py -h 
 python toFASTQ.py -h
 ```
@@ -106,19 +107,19 @@ PERFORMANCE & PARALLELIZATION:
 ## FASTQ to FASTR conversion examples:
 ### FASTR Mode 0 Encoding
 ```bash
-python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode0.fastr --mode 0 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 1 Encoding
 ```bash
-python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode1.fastr  --mode 1 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode1.fastr  --mode 1 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 2 Encoding
 ```bash
-python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode2.fastr --mode 2 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 ### FASTR Mode 3 Encoding
 ```bash
-python FASTR-main/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mode 3 --qual_scale log --seq_type illumina_sra --threads 16 --phred_alpha phred94
 ```
 
 
@@ -168,19 +169,19 @@ PERFORMANCE & PARALLELIZATION:
 ## FASTR to FASTQ conversion examples:
 ### FASTR Mode 0 Dencoding
 ```bash
-python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --threads 16 --phred_alphabet phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --mode 0 --threads 16 --phred_alphabet phred94
 ```
 ### FASTR Mode 1 Dencoding
 ```bash
-python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --threads 16 --phred_alphabet phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --mode 1 --threads 16 --phred_alphabet phred94
 ```
 ### FASTR Mode 2 Dencoding
 ```bash
-python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --threads 16 --phred_alphabet phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --mode 2 --threads 16 --phred_alphabet phred94
 ```
 ### FASTR Mode 3 Dencoding
 ```bash
-python FASTR-main/src/toFASTQ.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --threads 16 --phred_alphabet phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --mode 3 --threads 16 --phred_alphabet phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
 ```
 
 
