@@ -29,11 +29,6 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
     Main function to reconstruct FASTQ file from FASTR.
     Coordinates parallel reconstruction w/ worker processes.
     """
-    gray_N = kwargs.get("gray_N", 0)
-    gray_A = kwargs.get("gray_A", 3)
-    gray_G = kwargs.get("gray_G", 66)
-    gray_C = kwargs.get("gray_C", 129)
-    gray_T = kwargs.get("gray_T", 192)
     phred_alphabet_max = kwargs.get("phred_alpha", None)
     phred_offset = kwargs.get("phred_offset", 33)
     chunk_size_mb = kwargs.get("chunk_size_mb", 8)
@@ -56,7 +51,22 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
         length_flag,
         second_head_flag,
         safe_mode_flag,
+        grayscale_vals,
     ) = parse_metadata_header(header_data)
+    if grayscale_vals is not None and len(grayscale_vals) == 5:
+        gray_N, gray_A, gray_G, gray_C, gray_T = grayscale_vals
+        logger.info(
+            f"Using grayscale values from metadata: N={gray_N}, A={gray_A}, G={gray_G}, C={gray_C}, T={gray_T}"
+        )
+    else:
+        gray_N, gray_A, gray_G, gray_C, gray_T = (
+            0,
+            3,
+            66,
+            129,
+            192,
+        )  # Default vals
+        logger.info("Using default grayscale values")
 
     mode = detected_mode
 
@@ -434,36 +444,6 @@ def main():
         help="Override phred alphabet from metadata (phred42/phred63/phred94) [auto]",
     )
 
-    # Base Mapping Group
-    gray_group = parser.add_argument_group("GRAYSCALE DECODING")
-    gray_group.add_argument(
-        "--gray_N", type=int, metavar="INT", default=0, help="Grayscale value for N [0]"
-    )
-    gray_group.add_argument(
-        "--gray_A", type=int, metavar="INT", default=3, help="Grayscale value for A [3]"
-    )
-    gray_group.add_argument(
-        "--gray_G",
-        type=int,
-        metavar="INT",
-        default=66,
-        help="Grayscale value for G [66]",
-    )
-    gray_group.add_argument(
-        "--gray_C",
-        type=int,
-        metavar="INT",
-        default=129,
-        help="Grayscale value for C [129]",
-    )
-    gray_group.add_argument(
-        "--gray_T",
-        type=int,
-        metavar="INT",
-        default=192,
-        help="Grayscale value for T [192]",
-    )
-
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
     perf_group.add_argument(
@@ -523,11 +503,6 @@ def main():
     reconstruct_fastq(
         args.input_path,
         args.output_path,
-        gray_N=args.gray_N,
-        gray_A=args.gray_A,
-        gray_T=args.gray_T,
-        gray_C=args.gray_C,
-        gray_G=args.gray_G,
         phred_alphabet_max=phred_alphabet_max,
         phred_offset=args.phred_offset,
         chunk_size_mb=args.chunk_size_mb,

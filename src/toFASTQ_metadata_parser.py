@@ -50,6 +50,7 @@ def parse_metadata_header(
     second_head_flag = False
     phred_alphabet_from_metadata = None
     safe_mode_flag = False
+    grayscale_vals = None
     header_preview = data[
         :100
     ].decode(  # Don't need to read that much given mode is the first line of metadata
@@ -126,6 +127,14 @@ def parse_metadata_header(
                             pass
                     line_idx += 1
                     continue
+                if line.startswith("#GRAY_VALS="):
+                    vals_str = line.split("=", 1)[1].strip()
+                    stripped_vals = (
+                        vals_str.replace("[", "").replace("]", "").split(",")
+                    )
+                    grayscale_vals = [int(v) for v in stripped_vals]
+                    line_idx += 1
+                    continue
 
                 if line.startswith("#LENGTH="):
                     length_str = line.split("=", 1)[1].strip()
@@ -192,6 +201,7 @@ def parse_metadata_header(
             length_flag,
             second_head_flag,
             safe_mode_flag,
+            grayscale_vals,
         )
 
     # Mode 0, 2, and 3: Header compression enabled
@@ -207,6 +217,7 @@ def parse_metadata_header(
             length_flag,
             second_head_flag,
             safe_mode_flag,
+            grayscale_vals,
         )
 
     search_start = max(0, first_seq_marker - 1000)
@@ -265,6 +276,10 @@ def parse_metadata_header(
                     logger.info(f"Found PHRED alphabet: {phred_alphabet_from_metadata}")
                 except:
                     pass
+            line_idx += 1
+            continue
+        if line.startswith("#GRAY_VALS="):
+            grayscale_vals = [int(v) for v in re.findall(r"\d+", line)]
             line_idx += 1
             continue
 
@@ -329,4 +344,5 @@ def parse_metadata_header(
         length_flag,
         second_head_flag,
         safe_mode_flag,
+        grayscale_vals,
     )
