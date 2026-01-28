@@ -127,38 +127,29 @@ python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mo
 
 ## FASTR to FASTQ conversion usage:
 ```bash
-usage: toFASTQ.py [-h] [--headers_file FILE] [--phred_offset INT] [--phred_alpha STR] [--gray_N INT] [--gray_A INT] [--gray_G INT] [--gray_C INT] [--gray_T INT]
-                  [--chunk_size_mb INT] [--threads INT] [--verbose INT] [--profile INT]
-                  FILE FILE
+usage: toFASTQ.py [-h] [--headers_file FILE] [--phred_offset INT] [--phred_alpha STR] [--chunk_size_mb INT] [--threads INT] [--verbose INT] [--profile INT] FILE FILE
 
 Reconstruct FASTQ files from FASTR.
 
 positional arguments:
-  FILE                  Path to FASTR file
-  FILE                  Output FASTQ file path
+  FILE                 Path to FASTR file
+  FILE                 Output FASTQ file path
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help           show this help message and exit
 
 RECONSTRUCTION MODE:
-  --headers_file FILE   Path to headers file for mode 3 reconstruction [null]
+  --headers_file FILE  Path to headers file for mode 3 reconstruction [null]
 
 QUALITY RECONSTRUCTION:
-  --phred_offset INT    Phred quality offset for output [33]
-  --phred_alpha STR  Override phred alphabet from metadata (phred42/phred63/phred94) [auto]
-
-GRAYSCALE DECODING:
-  --gray_N INT          Grayscale value for N [0]
-  --gray_A INT          Grayscale value for A [3]
-  --gray_G INT          Grayscale value for G [66]
-  --gray_C INT          Grayscale value for C [129]
-  --gray_T INT          Grayscale value for T [192]
+  --phred_offset INT   Phred quality offset for output [33]
+  --phred_alpha STR    Override phred alphabet from metadata (phred42/phred63/phred94) [auto]
 
 PERFORMANCE & PARALLELIZATION:
-  --chunk_size_mb INT   Chunk size in MB for parallel processing [8]
-  --threads INT         Number of parallel threads [1]
-  --verbose INT         Enable verbose logging (0/1) [0]
-  --profile INT         Enable cProfile profiling (0/1) [0]
+  --chunk_size_mb INT  Chunk size in MB for parallel processing [8]
+  --threads INT        Number of parallel threads [1]
+  --verbose INT        Enable verbose logging (0/1) [0]
+  --profile INT        Enable cProfile profiling (0/1) [0]
 ```
 
 ## FASTR to FASTQ conversion examples:
