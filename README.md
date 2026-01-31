@@ -127,7 +127,7 @@ python FASTR/src/toFASTR.py ERR15909551.fastq ERR15909551.fastr_mode3.fastr --mo
 
 ## FASTR to FASTQ conversion usage:
 ```bash
-usage: toFASTQ.py [-h] [--headers_file FILE] [--phred_offset INT] [--phred_alpha STR] [--chunk_size_mb INT] [--threads INT] [--verbose INT] [--profile INT] FILE FILE
+usage: toFASTQ.py [-h] [--headers_file FILE] [--chunk_size_mb INT] [--threads INT] [--verbose INT] [--profile INT] FILE FILE
 
 Reconstruct FASTQ files from FASTR.
 
@@ -141,10 +141,6 @@ options:
 RECONSTRUCTION MODE:
   --headers_file FILE  Path to headers file for mode 3 reconstruction [null]
 
-QUALITY RECONSTRUCTION:
-  --phred_offset INT   Phred quality offset for output [33]
-  --phred_alpha STR    Override phred alphabet from metadata (phred42/phred63/phred94) [auto]
-
 PERFORMANCE & PARALLELIZATION:
   --chunk_size_mb INT  Chunk size in MB for parallel processing [8]
   --threads INT        Number of parallel threads [1]
@@ -155,19 +151,19 @@ PERFORMANCE & PARALLELIZATION:
 ## FASTR to FASTQ conversion examples:
 ### FASTR Mode 0 Dencoding
 ```bash
-python FASTR/src/toFASTQ.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode0.fastr ERR15909551.fastr_mode0_decom.fastq --threads 16
 ```
 ### FASTR Mode 1 Dencoding
 ```bash
-python FASTR/src/toFASTQ.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode1.fastr ERR15909551.fastr_mode1_decom.fastq --threads 16
 ```
 ### FASTR Mode 2 Dencoding
 ```bash
-python FASTR/src/toFASTQ.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --threads 16 --phred_alpha phred94
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode2.fastr ERR15909551.fastr_mode2_decom.fastq --threads 16
 ```
 ### FASTR Mode 3 Dencoding
 ```bash
-python FASTR/src/toFASTQ.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --threads 16 --phred_alpha phred94 --headers_file ERR15909551.fastr_mode3_headers.txt
+python FASTR/src/toFASTQ.py ERR15909551.fastr_mode3.fastr ERR15909551.fastr_mode3_decom.fastq --threads 16 --headers_file ERR15909551.fastr_mode3_headers.txt
 ```
 
 
