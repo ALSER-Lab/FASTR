@@ -9,6 +9,7 @@ from io import StringIO
 from multiprocessing import Pool
 
 import numpy as np
+
 from toFASTQ_base_mapping import create_base_map, reverse_base_map
 from toFASTQ_header_indexing import build_header_index
 from toFASTQ_metadata_parser import parse_metadata_header
@@ -29,8 +30,6 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
     Main function to reconstruct FASTQ file from FASTR.
     Coordinates parallel reconstruction w/ worker processes.
     """
-    phred_alphabet_max = kwargs.get("phred_alpha", None)
-    phred_offset = kwargs.get("phred_offset", 33)
     chunk_size_mb = kwargs.get("chunk_size_mb", 8)
     num_workers = kwargs.get("threads", 1)
     mode3_headers_file = kwargs.get("mode3_headers_file", None)
@@ -69,9 +68,8 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
         logger.info("Using default grayscale values")
 
     mode = detected_mode
-
-    if phred_alphabet_max is None and phred_from_metadata is not None:
-        phred_alphabet_max = phred_from_metadata
+    phred_alphabet_max = phred_from_metadata
+    phred_offset = 33
 
     subtract_table = create_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
     reverse_map = reverse_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
@@ -426,24 +424,6 @@ def main():
         help="Path to headers file for mode 3 reconstruction [null]",
     )
 
-    # Quality Parameters Group
-    quality_group = parser.add_argument_group("QUALITY RECONSTRUCTION")
-    quality_group.add_argument(
-        "--phred_offset",
-        type=int,
-        metavar="INT",
-        default=33,
-        help="Phred quality offset for output [33]",
-    )
-    quality_group.add_argument(
-        "--phred_alpha",
-        type=str,
-        metavar="STR",
-        default=None,
-        choices=["phred42", "phred63", "phred94"],
-        help="Override phred alphabet from metadata (phred42/phred63/phred94) [auto]",
-    )
-
     # Performance Group
     perf_group = parser.add_argument_group("PERFORMANCE & PARALLELIZATION")
     perf_group.add_argument(
@@ -484,15 +464,6 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
-    phred_alphabet_max = None
-    if args.phred_alpha:
-        if args.phred_alpha == "phred42":
-            phred_alphabet_max = 41
-        elif args.phred_alpha == "phred63":
-            phred_alphabet_max = 62
-        elif args.phred_alpha == "phred94":
-            phred_alphabet_max = 93
-
     start_time = time.perf_counter()
 
     if args.profile == 1:
@@ -503,8 +474,6 @@ def main():
     reconstruct_fastq(
         args.input_path,
         args.output_path,
-        phred_alphabet_max=phred_alphabet_max,
-        phred_offset=args.phred_offset,
         chunk_size_mb=args.chunk_size_mb,
         num_workers=args.threads,
         mode3_headers_file=args.headers_file,
