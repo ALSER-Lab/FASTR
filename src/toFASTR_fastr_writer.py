@@ -122,7 +122,6 @@ def process_and_write_records(
         # Write sequence data
         if binary:
             outfile.write(seq_data.tobytes())
-            # Mode 3 doesn't have newlines between sequences, other modes do
             outfile.write(b"\n")
         else:
             if keep_bases:
