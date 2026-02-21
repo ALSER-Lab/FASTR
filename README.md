@@ -28,7 +28,7 @@ Ensure you have Python 3.x installed. The tool relies on `numpy` for efficient a
 ```bash
 git clone https://github.com/ALSER-Lab/FASTR.git
 cd FASTR
-pip install -r requirements.txt # Installs numpy and numba
+python -m pip install -r requirements.txt # Installs numpy and numba
 cd src
 python toFASTR.py -h 
 python toFASTQ.py -h
