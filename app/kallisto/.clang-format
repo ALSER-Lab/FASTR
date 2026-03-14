@@ -1,0 +1,25 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+IndentWidth: 2
+UseTab: Never
+ColumnLimit: 100
+
+# Brace settings
+BreakBeforeBraces: Attach
+AllowShortBlocksOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+
+# Other formatting
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+SpaceBeforeParens: ControlStatements

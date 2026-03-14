@@ -1,0 +1,6 @@
+*.fastq
+*.fastr
+*.idx
+out_fastq/
+out_fastr/
+build/
