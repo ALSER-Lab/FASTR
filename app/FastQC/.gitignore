@@ -1,40 +1,10 @@
-# Compiled files
-/bin/
-
-# Compiled class file
+*.fastq
+*.fastr
+*_headers.txt
+*.html
+*.zip
 *.class
-
-# Log file
-*.log
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
-*.jar
-*.war
-*.ear
-*.tar.gz
-*.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-
-# tests
-test/bin/
-test/reports/
-
-# Other
-.DS_Store
-.idea
-
-test/**/*.html
-test/**/*.zip
-test/reports/
-test/integration/output
-
-# ApprovalTests generated files
-*.received.*
+FASTRDebug.java
+out_fastr/
+output_dir/
+bin/
