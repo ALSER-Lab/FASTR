@@ -8,3 +8,5 @@ FASTRDebug.java
 out_fastr/
 output_dir/
 bin/
+*.jar
+bin/
