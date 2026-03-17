@@ -38,11 +38,21 @@ def find_structure_prefix(structure_template: str) -> str:
 
 def parse_metadata_header(
     data: bytes,
-) -> Tuple[List[MetadataBlock], int, Optional[str], Optional[int]]:
+) -> Tuple[
+    List[MetadataBlock],
+    int,
+    Optional[str],
+    Optional[int],
+    Optional[int],
+    bool,
+    bool,
+    bool,
+    Optional[List[int]],
+]:
     """
     Parse FASTR metadata headers to find reconstruction information.
     Returns: (metadata_blocks, data_start_byte, sra_accession, phred_alphabet_max,
-              detected_mode, length_flag, second_head_flag, safe_mode_flag)
+              detected_mode, length_flag, second_head_flag, safe_mode_flag, grayscale_vals)
     """
     metadata_blocks = []
     sra_accession = None
@@ -51,14 +61,17 @@ def parse_metadata_header(
     phred_alphabet_from_metadata = None
     safe_mode_flag = False
     grayscale_vals = None
+    detected_mode = None  # Initialize detected_mode
     header_preview = data[
         :100
     ].decode(  # Don't need to read that much given mode is the first line of metadata
         "utf-8", errors="ignore"
     )  # Duct-tape fix for now, will refactor later
+    mode = None  # Initialize mode variable
     for line in header_preview.split("\n"):
         if line.startswith("#MODE="):  # Detect mode to use in searching
             mode = int(line.split("=", 1)[1].strip())
+            detected_mode = mode  # Set detected_mode too
             break
 
     if mode == 1:
