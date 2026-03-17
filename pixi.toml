@@ -1,0 +1,43 @@
+[workspace]
+name = "fastr-performance"
+version = "0.1.0"
+description = "Performance testing and benchmarking for FASTR format"
+authors = ["FASTR Contributors"]
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.11.*"
+numpy = ">=1.24"
+numba = ">=0.57"
+bwa-mem2 = ">=2.2.1"
+samtools = ">=1.18"
+pigz = ">=2.7"
+pip = ">=23.0"
+pytest = ">=7.0"
+
+[tasks]
+# Install FASTR in development mode
+install-dev = "pip install -e ."
+
+# Setup test data (decompress and build BWA index)
+setup-test-data = "bash performance/setup_test_data.sh"
+
+# Verify input FASTQ files are properly paired
+verify-pairing = "bash performance/verify_pairing.sh"
+
+# Test FASTR conversion preserves all reads
+verify-fastr-conversion = "bash performance/test_fastr_fixed.sh"
+
+# Run unit tests
+test-unit = "pytest tests/ -v --tb=short"
+
+# Run simple benchmark comparing internal reader vs pigz
+benchmark-simple = "bash performance/simple_benchmark.sh"
+
+# Run FASTR fixed streaming test
+benchmark-fastr = "bash performance/test_fastr_fixed.sh"
+
+# Run all benchmarks
+benchmark-all = { depends-on = ["benchmark-simple", "benchmark-fastr"] }
+
