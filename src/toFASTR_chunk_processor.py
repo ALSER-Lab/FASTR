@@ -106,6 +106,51 @@ def process_chunk_worker(
         raise
 
 
+def find_last_fastq_record_boundary(buffer: bytes) -> int:
+    """
+    Find the position of the last complete FASTQ record boundary in buffer.
+    Returns the position after the last complete record, or -1 if no complete record found.
+
+    A complete FASTQ record has 4 lines:
+    1. @ header
+    2. sequence
+    3. + separator
+    4. quality (same length as sequence)
+    """
+    lines = buffer.split(b"\n")
+
+    # Work backwards to find the last complete record
+    i = len(lines) - 1
+
+    # Skip empty trailing line if present
+    if i >= 0 and lines[i] == b"":
+        i -= 1
+
+    # We need at least 4 lines for a complete record
+    while i >= 3:
+        # Check if this could be the end of a quality line (line 4 of record)
+        qual_line = lines[i]
+        plus_line = lines[i - 1] if i >= 1 else b""
+        seq_line = lines[i - 2] if i >= 2 else b""
+        header_line = lines[i - 3] if i >= 3 else b""
+
+        # Valid record structure:
+        # - Header starts with @
+        # - Plus line starts with +
+        # - Quality length matches sequence length
+        if (
+            header_line.startswith(b"@")
+            and plus_line.startswith(b"+")
+            and len(qual_line) == len(seq_line)
+        ):
+            # Found a complete record! Return position after this record
+            return sum(len(line) + 1 for line in lines[: i + 1])
+
+        i -= 1
+
+    return -1
+
+
 def chunk_generator(fastq_path: str, chunk_size_bytes: int):
     """
     Generator that yields file chunks ending on complete record boundaries.
@@ -132,22 +177,31 @@ def chunk_generator(fastq_path: str, chunk_size_bytes: int):
             file_position += len(chunk)
 
             # Find last complete record boundary
-            last_at = buffer.rfind(b"\n@")
-            if last_at == -1 or not chunk:
+            if not chunk:
+                # End of file - process all remaining buffer
                 process_buffer = buffer
                 buffer = b""
             else:
-                process_buffer = buffer[: last_at + 1]
-                buffer = buffer[last_at + 1 :]
+                # Find last complete FASTQ record
+                boundary_pos = find_last_fastq_record_boundary(buffer)
+                if boundary_pos == -1:
+                    # No complete record found, keep accumulating
+                    continue
+                else:
+                    process_buffer = buffer[:boundary_pos]
+                    buffer = buffer[boundary_pos:]
 
             if process_buffer:
+                # The actual record count will be determined by parse_fastq_records_from_buffer
+                # For now, we provide an estimate for the start_index
+                # This estimate doesn't need to be perfect since records have absolute headers
+                lines_in_chunk = process_buffer.count(b"\n")
+                estimated_records = lines_in_chunk // 4  # FASTQ has 4 lines per record
+
                 yield (chunk_id, process_buffer, start_index)
 
-                # Estimate number of records for next chunk's start index
-                estimated_records = process_buffer.count(b"\n@")
                 logger.debug(
                     f"Yielding chunk {chunk_id}: bytes 0-{file_position} ({len(process_buffer)} bytes, ~{estimated_records} seqs)"
                 )
                 start_index += estimated_records
                 chunk_id += 1
-
