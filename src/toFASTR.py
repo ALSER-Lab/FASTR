@@ -8,7 +8,6 @@ from functools import partial
 from multiprocessing import Pool
 
 import numpy as np
-
 from toFASTR_chunk_processor import chunk_generator, process_chunk_worker
 from toFASTR_header_compression import (format_metadata_header,
                                         metadata_dict_equals)
@@ -58,6 +57,10 @@ def convert_fastq_to_fastr(
     """
     Convert FASTQ files to FASTR compressed format by encoding bases as integers and optionally compressing repetitive header metadata.
     """
+    if verbose:
+        logger.info(
+            f"All byte values of 10 will be changed to 255 to avoid parsing confusion with the newline character."
+        )
 
     file_size = os.path.getsize(fastq_path)
     logger.info(f"File size: {file_size:,} bytes ({file_size / (1024**3):.2f} GB)")

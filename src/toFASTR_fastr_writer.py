@@ -2,7 +2,6 @@ import logging
 from typing import List, Optional
 
 import numpy as np
-
 from data_structures import FASTQRecord
 from toFASTR_quality_processing import apply_quality_to_bases
 
@@ -12,9 +11,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-# Reserved sequence start marker as val of 255
-SEQUENCE_START_MARKER = np.uint8(255)
 
 
 def process_and_write_records(
@@ -83,20 +79,11 @@ def process_and_write_records(
     # Write all sequences
     for idx, record in enumerate(records):
         seq_data = processed_seqs[idx]
-
-        if not keep_bases and np.any(seq_data >= 255):
-            logger.warning(
-                f"Sequence {idx} contains reserved value 255 (likely from custom base ranges). "
-                f"Clamping to 254. Check your --gray_* arguments to avoid data loss."
-            )
-            seq_data = np.clip(seq_data, 0, 254)
+        seq_data[seq_data == 10] = 255
 
         # Write headers to separate file if headers_buffer provided (Mode 3)
         if headers_buffer is not None:
             headers_buffer.write(record.original_header)
-            # For mode 3 we write 255 before bases
-            if binary:
-                outfile.write(bytes([SEQUENCE_START_MARKER]))
 
         if mode == 0:
             if not remove_repeating_header:
@@ -113,11 +100,7 @@ def process_and_write_records(
                 if header_bytes.endswith(b"\n"):
                     header_bytes = header_bytes[:-1]
                 outfile.write(header_bytes)
-                if safe_mode:  # 255 then \n
-                    outfile.write(bytes([SEQUENCE_START_MARKER]))
-                    outfile.write(b"\n")
-                else:  # Just \n
-                    outfile.write(b"\n")
+                outfile.write(b"\n")
 
         # Write sequence data
         if binary:
@@ -137,4 +120,3 @@ def process_and_write_records(
             outfile.write(b"+\n")
             outfile.write(record.quality_string)
             outfile.write(b"\n")
-
