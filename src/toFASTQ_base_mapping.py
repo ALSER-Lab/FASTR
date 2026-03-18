@@ -11,9 +11,8 @@ def create_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
     base_table[gray_A:gray_G] = gray_A
     base_table[gray_G:gray_C] = gray_G
     base_table[gray_C:gray_T] = gray_C
-    base_table[gray_T:255] = (
-        gray_T  # Never reaches 255 (reserved for indicator of sequence start)
-    )
+    base_table[gray_T:255] = gray_T
+    base_table[255] = gray_A
     return base_table
 
 
@@ -27,7 +26,6 @@ def reverse_base_map(gray_N=0, gray_A=3, gray_G=66, gray_C=129, gray_T=192):
     reverse_map[gray_A:gray_G] = ord("A")
     reverse_map[gray_G:gray_C] = ord("G")
     reverse_map[gray_C:gray_T] = ord("C")
-    reverse_map[gray_T:255] = ord(
-        "T"
-    )  # Never reaches 255 (reserved for indicator of sequence start)
+    reverse_map[gray_T:255] = ord("T")
+    reverse_map[255] = ord("A")
     return reverse_map
