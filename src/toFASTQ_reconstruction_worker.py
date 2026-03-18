@@ -399,165 +399,34 @@ def _process_mode_2(
     sequences_in_chunk = 0
     cursor = 0
 
+    if cursor < len(data) and data[cursor : cursor + 1] != b"@":
+        next_newline = data.find(b"\n", cursor)
+        if next_newline == -1:
+            return (output_buffer.getvalue(), 0)
+        cursor = next_newline + 1
+
     while cursor < chunk_size:
-        if safe_mode_flag:
-            # Find next @ with validation
-            if cursor == 0 and data[0:1] == b"@":
-                # First sequence in chunk starts at position 0
-                header_start_rel = 0
-            else:
-                # Always look for \n@ for subsequent sequences
-                header_start_rel = data.find(b"\n@", cursor)
-                if header_start_rel != -1:
-                    header_start_rel += 1  # Skip the \n, point to the @
+        # Line 1: header
+        header_end = data.find(b"\n", cursor)
+        if header_end == -1:
+            break
+        header_content = data[cursor + 1 : header_end].decode("utf-8", errors="replace")
 
-            if header_start_rel < 0 or header_start_rel >= chunk_size:
-                break
+        # Line 2: sequence data
+        seq_start = header_end + 1
+        seq_end = data.find(b"\n", seq_start)
+        if seq_end == -1:
+            break
+        seq_data = data[seq_start:seq_end]
 
-            candidate = header_start_rel  # Then validate by finding \xff after this
+        cursor = seq_end + 1
 
-            while candidate >= 0:
-                next_xff_rel = data.find(
-                    b"\xff",
-                    candidate,
-                    min(len(data), chunk_size + MAX_CHUNK_EXTENSION),
-                )
-                next_at_rel = data.find(
-                    b"\n@",
-                    candidate + 1,
-                    min(len(data), chunk_size + MAX_CHUNK_EXTENSION),
-                )
-
-                # If another \n@ comes before \xff, current candidate is invalid
-                if next_at_rel != -1 and (
-                    next_xff_rel == -1 or next_at_rel < next_xff_rel
-                ):
-                    candidate = next_at_rel + 1
-                    if candidate >= chunk_size + MAX_CHUNK_EXTENSION:
-                        candidate = -1
-                        break
-                    continue
-
-                # Found valid \xff
-                if next_xff_rel != -1:
-                    xff_pos = next_xff_rel
-                    break
-
-                candidate = -1
-                break
-
-            if candidate == -1:
-                break
-
-            header_start = candidate
-
-            # Extract header (between @ and \xff) w/ mode 2 reconstructing the header based off structure
-            header_content = (
-                data[header_start + 1 : xff_pos]
-                .decode("utf-8", errors="replace")
-                .strip()
-            )
-
-            # Bases start after \xff\n or \xff
-            if xff_pos + 1 < len(data) and data[xff_pos + 1 : xff_pos + 2] == b"\n":
-                seq_start_rel = xff_pos + 2
-            else:
-                seq_start_rel = xff_pos + 1
-
-            # Find sequence end (next valid @ header)
-            candidate_end_rel = seq_start_rel
-            seq_end_rel = -1
-
-            while True:
-                next_at_rel = data.find(
-                    b"\n@",
-                    candidate_end_rel,
-                    min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION),
-                )
-
-                if next_at_rel != -1:
-                    # Validate our \n@
-                    next_xff_rel = data.find(
-                        b"\xff",
-                        next_at_rel + 1,
-                        min(len(data), next_at_rel + 1000),
-                    )
-                    following_at_rel = data.find(
-                        b"\n@",
-                        next_at_rel + 2,
-                        min(len(data), next_at_rel + 1000),
-                    )
-
-                    if following_at_rel != -1 and (
-                        next_xff_rel == -1 or following_at_rel < next_xff_rel
-                    ):
-                        candidate_end_rel = following_at_rel + 1
-                        if candidate_end_rel > seq_start_rel + MAX_CHUNK_EXTENSION:
-                            break
-                        continue
-
-                    # Valid header if sequence ends at the \n
-                    seq_end_rel = next_at_rel
-                    break
-                else:
-                    seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
-                    while seq_end_rel > seq_start_rel and data[
-                        seq_end_rel - 1 : seq_end_rel
-                    ] in (b"\n", b"\r", b" "):
-                        seq_end_rel -= 1
-                    break
-
-            if seq_end_rel == -1 or seq_end_rel <= seq_start_rel:
-                cursor = len(data)
-                continue
-
-            seq_data = data[seq_start_rel:seq_end_rel]
-
-            if len(seq_data) == 0:
-                cursor = seq_end_rel
-                continue
-
-            cursor = seq_end_rel
-
-        else:
-            # Search in full file
-            start_idx_rel = data.find(
-                b"@", cursor, min(len(data), chunk_size + MAX_CHUNK_EXTENSION)
-            )
-            if start_idx_rel == -1:
-                break
-
-            header_end_rel = data.find(
-                b"\n", start_idx_rel, min(len(data), start_idx_rel + 10000)
-            )
-            if header_end_rel == -1:
-                break
-
-            header_content = (
-                data[start_idx_rel + 1 : header_end_rel]
-                .decode("utf-8", errors="ignore")
-                .strip()
-            )
-
-            seq_start_rel = header_end_rel + 1
-
-            next_header_rel = data.find(
-                b"\n@",
-                seq_start_rel,
-                min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION),
-            )
-
-            if next_header_rel != -1:
-                seq_end_rel = next_header_rel
-            else:
-                seq_end_rel = min(len(data), seq_start_rel + MAX_CHUNK_EXTENSION)
-                while seq_end_rel > seq_start_rel and data[
-                    seq_end_rel - 1 : seq_end_rel
-                ] in (b"\n", b"\r", b" ", b"\t"):
-                    seq_end_rel -= 1
-
-            seq_data = data[seq_start_rel:seq_end_rel]
-            cursor = seq_end_rel + 1
+        if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
+            next_metadata = metadata_blocks[current_metadata_idx + 1]
+            if sequence_count >= next_metadata.start_index:
+                current_metadata = next_metadata
+                current_inverse_table = inverse_tables[current_metadata_idx + 1]
+                current_metadata_idx += 1
 
         unique_id = None
         pair_number = 0
@@ -590,17 +459,12 @@ def _process_mode_2(
             else:
                 header = f"@seq{sequence_count}"
 
-        if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
-            next_metadata = metadata_blocks[current_metadata_idx + 1]
-            if sequence_count >= next_metadata.start_index:
-                current_metadata = next_metadata
-                current_inverse_table = inverse_tables[current_metadata_idx + 1]
-                current_metadata_idx += 1
-
+        # Convert binary to bases
         seq_array = np.frombuffer(seq_data, dtype=np.uint8)
         bases_array = reverse_map[seq_array]
         bases = bases_array.tobytes().decode("ascii")
 
+        # Reconstruct quality
         if current_inverse_table is not None:
             quality_scores = reverse_scaling_to_quality(
                 seq_array,
@@ -615,6 +479,7 @@ def _process_mode_2(
         if length_flag:
             header = f"{header} length={len(bases)}"
 
+        # Write output
         output_buffer.write(header.encode("utf-8"))
         output_buffer.write(b"\n")
         output_buffer.write(bases.encode("ascii"))
