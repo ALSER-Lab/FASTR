@@ -205,8 +205,20 @@ def parse_metadata_header(
         )
 
     # Mode 0, 2, and 3: Header compression enabled
-    # We reserve \xff (255 in hex) for start of sequence indicator, only for mode 3 (given it doesn't have an '@' indicator)
-    first_seq_marker = data.find(b"\xff") if mode == 3 else data.find(b"\n@")
+    if mode == 3:
+        # Find position right after the last metadata line (last line starting with #)
+        pos = 0
+        last_meta_end = 0
+        while pos < len(data):
+            line_end = data.find(b"\n", pos)
+            if line_end == -1:
+                break
+            if data[pos : pos + 1] == b"#":
+                last_meta_end = line_end + 1
+            pos = line_end + 1
+        first_seq_marker = last_meta_end
+    else:
+        first_seq_marker = data.find(b"\n@")
     if first_seq_marker == -1:
         return (
             metadata_blocks,

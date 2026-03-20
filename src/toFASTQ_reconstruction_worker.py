@@ -513,7 +513,7 @@ def _process_mode_3(
 ) -> Tuple[bytes, int]:
     """
     Process Mode 3: No repeating headers (requires external headers file).
-    Uses \\xff markers as sequence delimiters, loads headers from external file
+    Uses \\n as sequence delimiters, loads headers from external file
     with batch caching for performance. Falls back to generated headers on cache miss.
 
     Returns: (output_bytes, sequences_processed)
@@ -530,9 +530,7 @@ def _process_mode_3(
     headers_cache = {}
     if header_index is not None and headers_file_path:
         search_region_size = min(chunk_size + 1000000, len(data))
-        actual_marker_count = data[:search_region_size].count(
-            b"\xff"
-        )  # Count how many sequences in our chunk based on delimiter
+        actual_marker_count = data[:search_region_size].count(b"\n")
 
         batch_start_idx = start_seq_idx
         batch_end_idx = min(start_seq_idx + actual_marker_count, len(header_index))
@@ -561,40 +559,23 @@ def _process_mode_3(
             except Exception as e:
                 logger.debug(f"Header load failed: {e}")
 
-    search_limit = min(len(data), chunk_size + MAX_CHUNK_EXTENSION)
-    data_array = np.frombuffer(data[:search_limit], dtype=np.uint8)
-    all_marker_positions = np.where(data_array == 255)[0]
+    cursor = 0
+    if cursor < len(data) and data[cursor : cursor + 1] == b"\n":
+        cursor = 1
 
-    marker_positions = all_marker_positions[all_marker_positions < chunk_size]
-
-    if len(marker_positions) == 0:
-        return (output_buffer.getvalue(), 0)
-    for i in range(len(marker_positions)):
-        marker_pos = int(marker_positions[i])
-        seq_start_rel = marker_pos + 1
-
-        next_marker_idx = i + 1
-        if next_marker_idx < len(all_marker_positions):
-            seq_end_rel = int(all_marker_positions[next_marker_idx])
-        else:
-            seq_end_rel = len(data)
-
-        if (
-            seq_end_rel > seq_start_rel
-            and data[seq_end_rel - 1 : seq_end_rel]
-            == b"\n"  # Exclude the last character (always a \n from our conversions)
-        ):
-            seq_end_rel -= 1
-
-        if seq_end_rel <= seq_start_rel:
-            continue
-
-        seq_data = data[seq_start_rel:seq_end_rel]
+    while cursor < chunk_size:
+        seq_end = data.find(b"\n", cursor)
+        if seq_end == -1 or seq_end > chunk_size:
+            break
+        seq_data = data[cursor:seq_end]
+        cursor = seq_end + 1
 
         if len(seq_data) == 0:
             continue
 
-        # Check for metadata block changes
+        seq_array = np.frombuffer(seq_data, dtype=np.uint8).copy()
+        seq_array[seq_array == 255] = 10
+
         if len(metadata_blocks) > 1 and current_metadata_idx < len(metadata_blocks) - 1:
             next_metadata = metadata_blocks[current_metadata_idx + 1]
             if sequence_count >= next_metadata.start_index:
@@ -604,12 +585,12 @@ def _process_mode_3(
 
         header = None
 
-        if sequence_count in headers_cache:  # Try cache first
+        if sequence_count in headers_cache:
             header = headers_cache[sequence_count]
             if header and not header.startswith("@"):
                 header = "@" + header
 
-        if not header:  # Fallback to generation @seq header
+        if not header:
             if current_metadata and current_metadata.structure_template:
                 header_prefix = find_structure_prefix(
                     current_metadata.structure_template
@@ -624,11 +605,9 @@ def _process_mode_3(
             else:
                 header = f"@seq{sequence_count}"
 
-        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
         bases_array = reverse_map[seq_array]
         bases = bases_array.tobytes().decode("ascii")
 
-        # Reconstruct quality
         if current_inverse_table is not None:
             quality_scores = reverse_scaling_to_quality(
                 seq_array,
@@ -640,7 +619,6 @@ def _process_mode_3(
                 (quality_scores + phred_offset).astype(np.uint8)
             ).decode("ascii")
 
-        # Write output
         output_buffer.write(header.encode("utf-8"))
         output_buffer.write(b"\n")
         output_buffer.write(bases.encode("ascii"))

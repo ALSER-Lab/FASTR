@@ -9,7 +9,6 @@ from io import StringIO
 from multiprocessing import Pool
 
 import numpy as np
-
 from toFASTQ_base_mapping import create_base_map, reverse_base_map
 from toFASTQ_header_indexing import build_header_index
 from toFASTQ_metadata_parser import parse_metadata_header
@@ -236,9 +235,10 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
             while pos < buffer_len:
                 chunk_end = min(pos + chunk_size_bytes, buffer_len)
 
-                # Read search region for boundary detection
-                search_start = max(pos, chunk_end - 1000)
-                search_size = chunk_end - search_start + 1000  # Extra buffer for safety
+                search_window = max(
+                    1000, chunk_size_bytes
+                )                  search_start = max(pos, chunk_end - search_window)
+                search_size = chunk_end - search_start + search_window
 
                 f.seek(buffer_start + search_start)
                 search_region = f.read(min(search_size, buffer_len - search_start))
@@ -247,7 +247,7 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
                 if mode == 3:
                     # Mode 3 splits on 255 markers
                     last_marker = search_region.rfind(
-                        b"\n\xff", 0, chunk_end - search_start
+                        b"\n", 0, chunk_end - search_start
                     )
 
                     if last_marker != -1:
@@ -309,7 +309,7 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
                     )  # Sample first 100KB
 
                     if mode == 3:
-                        estimated_seqs = sample.count(b"\xff")
+                        estimated_seqs = sample.count(b"\n")
                         if len(sample) < abs_end - abs_start:
                             # Extrapolate
                             estimated_seqs = int(
@@ -350,7 +350,7 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
             f.seek(abs_start)
             chunk_size = abs_end - abs_start
             chunk_bytes = f.read(chunk_size)
-            actual_count = chunk_bytes.count(b"\xff")
+            actual_count = chunk_bytes.count(b"\n")
 
         chunks_list.append((chunk_id, abs_start, abs_end, current_seq_idx))
         current_seq_idx += actual_count
