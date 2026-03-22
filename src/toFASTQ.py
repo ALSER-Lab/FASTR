@@ -52,12 +52,12 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
         grayscale_vals,
     ) = parse_metadata_header(header_data)
     if grayscale_vals is not None and len(grayscale_vals) == 5:
-        gray_N, gray_A, gray_G, gray_C, gray_T = grayscale_vals
+        gray_N, gray_A, gray_C, gray_G, gray_T = grayscale_vals
         logger.info(
-            f"Using grayscale values from metadata: N={gray_N}, A={gray_A}, G={gray_G}, C={gray_C}, T={gray_T}"
+            f"Using grayscale values from metadata: N={gray_N}, A={gray_A}, C={gray_C}, G={gray_G}, T={gray_T}"
         )
     else:
-        gray_N, gray_A, gray_G, gray_C, gray_T = (
+        gray_N, gray_A, gray_C, gray_G, gray_T = (
             0,
             3,
             66,
@@ -70,8 +70,8 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
     phred_alphabet_max = phred_from_metadata
     phred_offset = 33
 
-    subtract_table = create_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
-    reverse_map = reverse_base_map(gray_N, gray_A, gray_G, gray_C, gray_T)
+    subtract_table = create_base_map(gray_N, gray_A, gray_C, gray_G, gray_T)
+    reverse_map = reverse_base_map(gray_N, gray_A, gray_C, gray_G, gray_T)
 
     inverse_tables = []
     if metadata_blocks:

@@ -336,7 +336,8 @@ def _process_mode_1(
                 current_metadata_idx += 1
 
         # Convert binary to bases
-        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+        seq_array = np.frombuffer(seq_data, dtype=np.uint8).copy()
+        seq_array[seq_array == 255] = 10
         bases_array = reverse_map[seq_array]
         bases = bases_array.tobytes().decode("ascii")
 
@@ -460,7 +461,8 @@ def _process_mode_2(
                 header = f"@seq{sequence_count}"
 
         # Convert binary to bases
-        seq_array = np.frombuffer(seq_data, dtype=np.uint8)
+        seq_array = np.frombuffer(seq_data, dtype=np.uint8).copy()
+        seq_array[seq_array == 255] = 10
         bases_array = reverse_map[seq_array]
         bases = bases_array.tobytes().decode("ascii")
 

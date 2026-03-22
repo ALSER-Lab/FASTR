@@ -207,8 +207,8 @@ def apply_quality_to_bases(
     n_mask = base_values == base_map[ord("N")]
     base_min_lookup[base_map[ord("N")]] = 0  # N: 0-2
     base_min_lookup[base_map[ord("A")]] = 3  # A: 3-65
-    base_min_lookup[base_map[ord("G")]] = 66  # G: 66-128
-    base_min_lookup[base_map[ord("C")]] = 129  # C: 129-191
+    base_min_lookup[base_map[ord("C")]] = 66  # G: 66-128
+    base_min_lookup[base_map[ord("G")]] = 129  # C: 129-191
     base_min_lookup[base_map[ord("T")]] = 192  # T: 192-254
 
     result = base_min_lookup[base_values] + scale_factors
@@ -305,4 +305,3 @@ def validate_and_adjust_formula(formula: str, phred_alphabet_max: int) -> str:
     except Exception as e:
         logger.error(f"Failed to validate formula '{formula}': {e}")
         raise
-

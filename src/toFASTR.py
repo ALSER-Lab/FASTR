@@ -445,7 +445,7 @@ def write_sequencer_metadata(
         f"#PHRED-ALPHABET=PHRED_{phred_alphabet_max + 1}\n"
     )  # We add one because the raw "Max" is one less than the values it can represent in total, due to the inclusion of 0
     metadata_lines.append(
-        f"#GRAY_VALS={grayscale_map[[ord('N')]]},{grayscale_map[[ord('A')]]},{grayscale_map[[ord('G')]]},{grayscale_map[[ord('C')]]},{grayscale_map[[ord('T')]]}\n"
+        f"#GRAY_VALS={grayscale_map[[ord('N')]]},{grayscale_map[[ord('A')]]},{grayscale_map[[ord('C')]]},{grayscale_map[[ord('G')]]},{grayscale_map[[ord('T')]]}\n"
     )
     metadata_lines.append(f"#LENGTH={length}\n")
     metadata_lines.append(f"#SECOND_HEAD={second_head}\n")
@@ -630,18 +630,18 @@ def main():
         "--gray_A", type=int, default=3, metavar="INT", help="Grayscale value for A [3]"
     )
     gray_group.add_argument(
-        "--gray_G",
+        "--gray_C",
         type=int,
         default=66,
         metavar="INT",
-        help="Grayscale value for G [66]",
+        help="Grayscale value for C [66]",
     )
     gray_group.add_argument(
-        "--gray_C",
+        "--gray_G",
         type=int,
         default=129,
         metavar="INT",
-        help="Grayscale value for C [129]",
+        help="Grayscale value for G [129]",
     )
     gray_group.add_argument(
         "--gray_T",
