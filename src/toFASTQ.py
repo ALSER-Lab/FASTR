@@ -235,9 +235,8 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
             while pos < buffer_len:
                 chunk_end = min(pos + chunk_size_bytes, buffer_len)
 
-                search_window = max(
-                    1000, chunk_size_bytes
-                )                  search_start = max(pos, chunk_end - search_window)
+                search_window = max(1000, chunk_size_bytes)
+                search_start = max(pos, chunk_end - search_window)
                 search_size = chunk_end - search_start + search_window
 
                 f.seek(buffer_start + search_start)
