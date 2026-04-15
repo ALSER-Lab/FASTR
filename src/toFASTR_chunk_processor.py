@@ -4,7 +4,6 @@ import traceback
 from typing import Tuple
 
 import numpy as np
-
 from toFASTR_fastq_parser import parse_fastq_records_from_buffer
 from toFASTR_fastr_writer import process_and_write_records
 
@@ -19,9 +18,6 @@ def process_chunk_worker(
     sequencer_type: str,
     keep_bases: bool,
     keep_quality: bool,
-    quality_scaling: str,
-    custom_formula: str,
-    phred_alphabet_max: int,
     min_quality: int,
     BYTE_LOOKUP: np.ndarray,
     binary: bool,
@@ -33,6 +29,7 @@ def process_chunk_worker(
     mode: int = None,
     safe_mode: bool = False,
     verbose: bool = False,
+    quality_lookup_table=None,
 ):
     """
     Parse FASTQ records from a chunk and write to FASTR format.
@@ -74,9 +71,6 @@ def process_chunk_worker(
                 records,
                 output_buffer,
                 base_map,
-                quality_scaling,
-                custom_formula,
-                phred_alphabet_max,
                 min_quality,
                 keep_bases,
                 binary,
@@ -87,6 +81,7 @@ def process_chunk_worker(
                 headers_buffer=headers_buffer,
                 mode=mode,
                 safe_mode=safe_mode,
+                quality_lookup_table=quality_lookup_table,
             )
 
         #  print(f"Worker completed chunk {chunk_id}")
@@ -150,4 +145,3 @@ def chunk_generator(fastq_path: str, chunk_size_bytes: int):
                 )
                 start_index += estimated_records
                 chunk_id += 1
-

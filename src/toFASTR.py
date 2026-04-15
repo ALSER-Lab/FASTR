@@ -12,8 +12,7 @@ from toFASTR_chunk_processor import chunk_generator, process_chunk_worker
 from toFASTR_header_compression import (format_metadata_header,
                                         metadata_dict_equals)
 from toFASTR_quality_processing import (create_phred_quality_map,
-                                        get_scaling_equation,
-                                        validate_and_adjust_formula)
+                                        load_quality_lookup_table)
 
 # Configure logging
 logging.basicConfig(
@@ -32,17 +31,15 @@ def convert_fastq_to_fastr(
     output_path,
     phred_map=None,
     min_quality=0,
-    quality_scaling="none",
     binary=True,
     compress_headers=False,
     sequencer_type="none",
     sra_accession=None,
     keep_bases=False,
     keep_quality=False,
-    custom_formula=None,
+    quality_lookup_path=None,
     multiple_flowcells=False,
     remove_repeating_header=False,
-    phred_alphabet_max=41,
     paired_end=False,
     paired_end_mode="same_file",
     chunk_size_mb=8,
@@ -70,7 +67,11 @@ def convert_fastq_to_fastr(
     extract_headers = False
     read_headers = False
     headers_output_path = None
+    quality_lookup_table = None
+    if quality_lookup_path:
 
+        quality_lookup_table = load_quality_lookup_table(quality_lookup_path)
+        logger.info(f"Quality lookup table mode enabled from: {quality_lookup_path}")
     if mode == 3:
         if mode3_input_headers is None:
             extract_headers = True
@@ -142,9 +143,6 @@ def convert_fastq_to_fastr(
                 sequencer_type=sequencer_type,
                 keep_bases=keep_bases,
                 keep_quality=keep_quality,
-                quality_scaling=quality_scaling,
-                custom_formula=custom_formula,
-                phred_alphabet_max=phred_alphabet_max,
                 min_quality=min_quality,
                 BYTE_LOOKUP=BYTE_LOOKUP,
                 binary=binary,
@@ -156,6 +154,7 @@ def convert_fastq_to_fastr(
                 mode=mode,
                 safe_mode=safe_mode,
                 verbose=verbose,
+                quality_lookup_table=quality_lookup_table,
             )
         )
         (
@@ -196,9 +195,6 @@ def convert_fastq_to_fastr(
                 structure_template,
                 paired_end,
                 paired_end_mode,
-                quality_scaling,
-                custom_formula,
-                phred_alphabet_max,
                 0,
                 -1,
                 base_map,
@@ -231,9 +227,6 @@ def convert_fastq_to_fastr(
                 sequencer_type=sequencer_type,
                 keep_bases=keep_bases,
                 keep_quality=keep_quality,
-                quality_scaling=quality_scaling,
-                custom_formula=custom_formula,
-                phred_alphabet_max=phred_alphabet_max,
                 min_quality=min_quality,
                 BYTE_LOOKUP=BYTE_LOOKUP,
                 binary=binary,
@@ -245,6 +238,7 @@ def convert_fastq_to_fastr(
                 mode=mode,
                 safe_mode=safe_mode,
                 verbose=verbose,
+                quality_lookup_table=quality_lookup_table,
             )
             chunk_counter = 1
             for (
@@ -342,9 +336,6 @@ def write_sequencer_metadata(
     structure,
     paired_end,
     paired_end_mode,
-    quality_scaling,
-    custom_formula,
-    phred_alphabet_max,
     start_idx,
     end_idx,
     grayscale_map,
@@ -442,9 +433,6 @@ def write_sequencer_metadata(
     metadata_lines.append(f"#RUN-START-TIME={run_start_time}\n")
     metadata_lines.append(f"#FLOW-CELL={flow_cell}\n")
     metadata_lines.append(
-        f"#PHRED-ALPHABET=PHRED_{phred_alphabet_max + 1}\n"
-    )  # We add one because the raw "Max" is one less than the values it can represent in total, due to the inclusion of 0
-    metadata_lines.append(
         f"#GRAY_VALS={grayscale_map[[ord('N')]]},{grayscale_map[[ord('A')]]},{grayscale_map[[ord('C')]]},{grayscale_map[[ord('G')]]},{grayscale_map[[ord('T')]]}\n"
     )
     metadata_lines.append(f"#LENGTH={length}\n")
@@ -454,9 +442,6 @@ def write_sequencer_metadata(
     metadata_lines.append(
         f"#PAIRED-END-SAME-FILE={'1' if (paired_end and paired_end_mode == 'same_file') else ''}\n"
     )
-
-    equation = get_scaling_equation(quality_scaling, custom_formula, phred_alphabet_max)
-    metadata_lines.append(f"#QUAL_SCALE={equation}\n")
 
     # Don't write structure for mode 3 since headers are in separate file
     if mode == 3:
@@ -494,12 +479,12 @@ def main():
     # Quality Group
     quality_group = parser.add_argument_group("QUALITY SCALING")
     quality_group.add_argument(
-        "--qual_scale",
+        "--qual_lookup",
         type=str,
+        default=None,
         metavar="STR",
-        choices=["log", "log_reverse", "log_custom", "one_hot", "custom"],
-        default="one_hot",
-        help="Quality scaling method. Available options: {'log', 'log_reverse', 'log_custom', 'one_hot', 'custom'} [one_hot]",
+        help="Path to quality score lookup table file (one integer per line, "
+        "index=quality score, value=scaled value). Overrides --qual_scale. [null]",
     )
     quality_group.add_argument(
         "--extract_qual",
@@ -521,14 +506,6 @@ def main():
         default=0,
         metavar="INT",
         help="Clamped minimum quality score threshold [0]",
-    )
-    quality_group.add_argument(
-        "--custom_formula",
-        type=str,
-        default=None,
-        metavar="STR",
-        help="Custom formula for quality scaling (use 'x' for quality score). "
-        "Example: '1 + 62 * (x - 40) / 53' or 'ln(x) * 10'",
     )
 
     # Paired-end args
@@ -736,12 +713,6 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
-    if args.qual_scale == "custom" and args.custom_formula is None:
-        logger.error("--qual_scale custom requires --custom_formula argument")
-        logger.info("Example usage:")
-        logger.info("  --qual_scale custom --custom_formula '1 + 62 * (x - 40) / 53'")
-        exit(1)
-
     if args.multi_flow == 1 and args.compress_hdr == 0:
         logger.warning("--multi_flow requires --compress_hdr 1 to function")
         logger.info("Enabling header compression automatically...")
@@ -770,20 +741,6 @@ def main():
         args.rm_repeat_hdr = 1
         args.bin_write = 1
         args.safe_mode = 0  # Safe mode not needed for mode 3 (as it is already safe)
-
-    # Phred alphabet configuration
-    if args.phred_alpha == "phred42":
-        phred_alphabet_max = 41
-    elif args.phred_alpha == "phred63":
-        phred_alphabet_max = 62
-    elif args.phred_alpha == "phred94":
-        phred_alphabet_max = 93
-
-    # Validate custom formula if provided
-    if args.custom_formula:
-        args.custom_formula = validate_and_adjust_formula(
-            args.custom_formula, phred_alphabet_max
-        )
 
     # Create base map
     numpy_base_map = np.zeros(128, dtype=np.uint8)
@@ -817,11 +774,7 @@ def main():
         print("Profiling enabled...")
 
     # Create phred map if needed
-    phred_map = (
-        create_phred_quality_map(args.phred_off, phred_alphabet_max)
-        if args.extract_qual
-        else None
-    )
+    phred_map = create_phred_quality_map(args.phred_off) if args.extract_qual else None
 
     logger.info(f"Converting sequences from {args.input_path}...")
 
@@ -831,17 +784,14 @@ def main():
         args.output_path,
         phred_map,
         args.min_qual,
-        args.qual_scale,
         args.bin_write,
         compress_headers=(args.compress_hdr == 1),
         sequencer_type=args.seq_type,
         sra_accession=args.sra_acc,
         keep_bases=args.keep_bases,
         keep_quality=args.keep_qual,
-        custom_formula=args.custom_formula,
         multiple_flowcells=(args.multi_flow == 1),
         remove_repeating_header=(args.rm_repeat_hdr == 1),
-        phred_alphabet_max=phred_alphabet_max,
         paired_end=args.paired,
         paired_end_mode=args.paired_mode,
         num_workers=args.threads,
@@ -852,6 +802,7 @@ def main():
         second_head=args.second_head,
         safe_mode=(args.safe_mode == 1),
         verbose=(args.verbose == 1),
+        quality_lookup_path=args.qual_lookup,
     )
 
     end_time = time.perf_counter()
