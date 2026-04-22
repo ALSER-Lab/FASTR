@@ -774,7 +774,11 @@ def main():
         print("Profiling enabled...")
 
     # Create phred map if needed
-    phred_map = create_phred_quality_map(args.phred_off) if args.extract_qual else None
+    phred_map = (
+        create_phred_quality_map(args.phred_off, phred_alphabet_max=93)
+        if args.extract_qual
+        else None
+    )
 
     logger.info(f"Converting sequences from {args.input_path}...")
 

@@ -20,7 +20,6 @@ def process_chunk_worker_reconstruction(
     subtract_table,
     metadata_blocks,
     inverse_tables,
-    phred_alphabet_max,
     phred_offset,
     sra_acc,
     mode,
@@ -69,7 +68,6 @@ def process_chunk_worker_reconstruction(
                 subtract_table=subtract_table,
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
-                phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 length_flag=length_flag,
                 second_head_flag=second_head_flag,
@@ -83,7 +81,6 @@ def process_chunk_worker_reconstruction(
                 subtract_table=subtract_table,
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
-                phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 second_head_flag=second_head_flag,
                 safe_mode_flag=safe_mode_flag,
@@ -97,7 +94,6 @@ def process_chunk_worker_reconstruction(
                 subtract_table=subtract_table,
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
-                phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 sra_accession=sra_acc,
                 length_flag=length_flag,
@@ -113,7 +109,6 @@ def process_chunk_worker_reconstruction(
                 subtract_table=subtract_table,
                 metadata_blocks=metadata_blocks,
                 inverse_tables=inverse_tables,
-                phred_alphabet_max=phred_alphabet_max,
                 phred_offset=phred_offset,
                 sra_accession=sra_acc,
                 headers_file_path=headers_file_path,
@@ -139,7 +134,6 @@ def _process_mode_0(
     subtract_table: np.ndarray,
     metadata_blocks: List[MetadataBlock],
     inverse_tables: List[np.ndarray],
-    phred_alphabet_max: int,
     phred_offset: int,
     length_flag: bool,
     second_head_flag: bool,
@@ -286,7 +280,6 @@ def _process_mode_1(
     subtract_table: np.ndarray,
     metadata_blocks: List[MetadataBlock],
     inverse_tables: List[np.ndarray],
-    phred_alphabet_max: int,
     phred_offset: int,
     second_head_flag: bool,
     safe_mode_flag: bool,
@@ -347,7 +340,6 @@ def _process_mode_1(
                 seq_array,
                 subtract_table,
                 current_inverse_table,
-                max_phred=phred_alphabet_max,
             )
             quality_string = quality_to_ascii(quality_scores, phred_offset).decode(
                 "ascii"
@@ -376,7 +368,6 @@ def _process_mode_2(
     subtract_table: np.ndarray,
     metadata_blocks: List[MetadataBlock],
     inverse_tables: List[np.ndarray],
-    phred_alphabet_max: int,
     phred_offset: int,
     sra_accession: Optional[str],
     length_flag: bool,
@@ -472,7 +463,6 @@ def _process_mode_2(
                 seq_array,
                 subtract_table,
                 current_inverse_table,
-                max_phred=phred_alphabet_max,
             )
             quality_string = quality_to_ascii(quality_scores, phred_offset).decode(
                 "ascii"
@@ -506,7 +496,6 @@ def _process_mode_3(
     subtract_table: np.ndarray,
     metadata_blocks: List[MetadataBlock],
     inverse_tables: List[np.ndarray],
-    phred_alphabet_max: int,
     phred_offset: int,
     sra_accession: Optional[str],
     headers_file_path: Optional[str],
@@ -615,7 +604,6 @@ def _process_mode_3(
                 seq_array,
                 subtract_table,
                 current_inverse_table,
-                max_phred=phred_alphabet_max,
             )
             quality_string = bytes(
                 (quality_scores + phred_offset).astype(np.uint8)

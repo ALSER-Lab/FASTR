@@ -24,6 +24,5 @@ class MetadataBlock:
 
     structure_template: str
     sequencer_type: str
-    scaling_equation: str
     start_index: int
     end_index: int

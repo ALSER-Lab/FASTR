@@ -94,7 +94,6 @@ def parse_metadata_header(
             # Process metadata lines
             current_seq_type = None
             current_structure = None
-            current_qual_scale = None
 
             while line_idx < len(lines):
                 line = lines[line_idx]
@@ -167,24 +166,6 @@ def parse_metadata_header(
                     else:
                         current_structure = line.split(":", 1)[1].strip()
                     logger.info(f"Found STRUCTURE metadata: {current_structure}")
-                    line_idx += 1
-                    continue
-
-                if line.startswith("#QUAL_SCALE="):
-                    current_qual_scale = line.split("=", 1)[1].strip()
-                    logger.info(f"Found equation: {current_qual_scale}")
-
-                    if current_seq_type and current_qual_scale:
-                        metadata_blocks.append(
-                            MetadataBlock(
-                                structure_template=current_structure or "",
-                                sequencer_type=current_seq_type,
-                                scaling_equation=current_qual_scale,
-                                start_index=0,
-                                end_index=-1,
-                            )
-                        )
-
                     line_idx += 1
                     continue
 
@@ -262,7 +243,6 @@ def parse_metadata_header(
     # Process metadata lines
     current_seq_type = None
     current_structure = None
-    current_qual_scale = None
 
     while line_idx < len(lines):
         line = lines[line_idx]
@@ -328,20 +308,13 @@ def parse_metadata_header(
             line_idx += 1
             continue
 
-        if line.startswith("#QUAL_SCALE="):
-            current_qual_scale = line.split("=", 1)[1].strip()
-            logger.info(f"Found equation: {current_qual_scale}")
-            line_idx += 1
-            continue
-
         line_idx += 1
 
-    if current_seq_type and current_qual_scale:
+    if current_seq_type:
         metadata_blocks.append(
             MetadataBlock(
                 structure_template=current_structure or "",
                 sequencer_type=current_seq_type,
-                scaling_equation=current_qual_scale,
                 start_index=0,
                 end_index=-1,
             )

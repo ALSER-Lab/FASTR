@@ -12,9 +12,9 @@ import numpy as np
 from toFASTQ_base_mapping import create_base_map, reverse_base_map
 from toFASTQ_header_indexing import build_header_index
 from toFASTQ_metadata_parser import parse_metadata_header
-from toFASTQ_quality_reconstruction import (build_formula_func,
-                                            build_inverse_quality_table)
+from toFASTQ_quality_reconstruction import build_inverse_lut
 from toFASTQ_reconstruction_worker import process_chunk_worker_reconstruction
+from toFASTR_quality_processing import load_quality_lookup_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +33,7 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
     num_workers = kwargs.get("threads", 1)
     mode3_headers_file = kwargs.get("mode3_headers_file", None)
     verbose = kwargs.get("verbose", False)
+    lut_path = kwargs.get("lut_path", None)
 
     chunk_size_bytes = chunk_size_mb * 1024 * 1024
     file_size = os.path.getsize(input_path)
@@ -67,23 +68,15 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
         logger.info("Using default grayscale values")
 
     mode = detected_mode
-    phred_alphabet_max = phred_from_metadata
     phred_offset = 33
 
     subtract_table = create_base_map(gray_N, gray_A, gray_C, gray_G, gray_T)
     reverse_map = reverse_base_map(gray_N, gray_A, gray_C, gray_G, gray_T)
 
     inverse_tables = []
-    if metadata_blocks:
-        for mb in metadata_blocks:
-            formula_func = build_formula_func(mb.scaling_equation)
-
-            q_possible = np.arange(phred_alphabet_max + 1, dtype=np.float32)
-            scaled_int_for_q = formula_func(q_possible).astype(np.int32)
-
-            inverse_table = build_inverse_quality_table(
-                scaled_int_for_q, q_possible.astype(np.int32), 63
-            )
+    if lut_path:
+        forward_lut = load_quality_lookup_table(lut_path)
+        inverse_table = build_inverse_lut(forward_lut)
         inverse_tables.append(inverse_table)
     headers_mmap_info = None
     header_index_mmap = None
@@ -371,7 +364,6 @@ def reconstruct_fastq(input_path: str, output_path: str, **kwargs):
                     subtract_table=subtract_table,
                     metadata_blocks=metadata_blocks,
                     inverse_tables=inverse_tables,
-                    phred_alphabet_max=phred_alphabet_max,
                     phred_offset=phred_offset,
                     sra_acc=sra_acc,
                     mode=mode,
@@ -415,6 +407,13 @@ def main():
 
     # Mode Group
     mode_group = parser.add_argument_group("RECONSTRUCTION MODE")
+    mode_group.add_argument(
+        "--qual_lookup",
+        type=str,
+        metavar="FILE",
+        default=None,
+        help="Path to quality score lookup table used during compression [null]",
+    )
     mode_group.add_argument(
         "--headers_file",
         type=str,
@@ -477,6 +476,7 @@ def main():
         num_workers=args.threads,
         mode3_headers_file=args.headers_file,
         verbose=(args.verbose == 1),
+        lut_path=args.qual_lookup,
     )
     if args.profile == 1:
         profiler.disable()
