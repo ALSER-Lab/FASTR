@@ -8,7 +8,7 @@ import uk.ac.babraham.FastQC.FastQCConfig;
 
 public class FASTRFile implements SequenceFile {
 
-    private static final int SENTINEL = 0xFF;
+    private static final byte NEWLINE_ESCAPE = (byte)0xFF;
 
     private final File file;
     private final long fileSize;
@@ -79,19 +79,18 @@ public class FASTRFile implements SequenceFile {
             String[] parts = gv.split(",");
             if (parts.length >= 5) {
                 try {
-                    gN = Integer.parseInt(parts[0]);
-                    gA = Integer.parseInt(parts[1]);
-                    gG = Integer.parseInt(parts[2]);
-                    gC = Integer.parseInt(parts[3]);
-                    gT = Integer.parseInt(parts[4]);
+                  gN = Integer.parseInt(parts[0]);
+                  gA = Integer.parseInt(parts[1]);
+                  gC = Integer.parseInt(parts[2]);
+                  gG = Integer.parseInt(parts[3]);
+                  gT = Integer.parseInt(parts[4]);
                 } catch (NumberFormatException ignored) {}
             }
         }
         if (meta.containsKey("QUAL_SCALE") && !meta.get("QUAL_SCALE").isEmpty()) {
             qualScaleFormula = convertFormula(meta.get("QUAL_SCALE"));
         }
-
-        buildLookupTables(gN, gA, gG, gC, gT);
+        buildLookupTables(gN, gA, gC, gG, gT);
         buildInverseScaleTable();
         if (mode == 3) loadSidecarHeaders();
         readNext();
@@ -169,61 +168,56 @@ public class FASTRFile implements SequenceFile {
     }
 
     private void readNextMode1or2() throws IOException, SequenceFormatException {
-        int headerStart = findValidatedHeader(cursor);
-        if (headerStart == -1) { nextSequence = null; return; }
+      while (cursor < data.length && data[cursor] != '@') cursor++;
+      if (cursor >= data.length) { nextSequence = null; return; }
 
-        int xffPos = indexOf(data, (byte)0xFF, headerStart);
-        if (xffPos == -1) { nextSequence = null; return; }
+      int headerEnd = indexOf(data, (byte)'\n', cursor);
+      if (headerEnd == -1) { nextSequence = null; return; }
 
-        String headerContent = new String(data, headerStart + 1, xffPos - headerStart - 1, "UTF-8").trim();
+      String headerContent = new String(data, cursor + 1, headerEnd - cursor - 1, "UTF-8").trim();
+      cursor = headerEnd + 1;
 
-        int seqStart = xffPos + 1;
-        if (seqStart < data.length && data[seqStart] == '\n') seqStart++;
+      int bodyEnd = indexOf(data, (byte)'\n', cursor);
+      if (bodyEnd == -1) bodyEnd = data.length;
 
-        int seqEnd = findBodyEnd(seqStart);
+      byte[] body = new byte[bodyEnd - cursor];
+      System.arraycopy(data, cursor, body, 0, body.length);
+      cursor = bodyEnd + 1;
 
-        byte[] body = new byte[seqEnd - seqStart];
-        System.arraycopy(data, seqStart, body, 0, body.length);
-        cursor = seqEnd;
+      String id      = reconstructHeader(headerContent);
+      String seq     = decodeSequence(body);
+      String quality = decodeQuality(body);
 
-        String id      = reconstructHeader(headerContent);
-        String seq     = decodeSequence(body);
-        String quality = decodeQuality(body);
-
-        nextSequence = new Sequence(this, seq, quality, id);
-        seqIndex++;
+      nextSequence = new Sequence(this, seq, quality, id);
+      seqIndex++;
     }
 
     private void readNextMode3() throws IOException, SequenceFormatException {
-        int xffPos = indexOf(data, (byte)0xFF, cursor);
-        if (xffPos == -1) { nextSequence = null; return; }
-        int seqStart = xffPos + 1;
+      if (cursor >= data.length) { nextSequence = null; return; }
 
-        int nextXff = indexOf(data, (byte)0xFF, seqStart);
-        int seqEnd = (nextXff == -1) ? data.length : nextXff;
-        while (seqEnd > seqStart && data[seqEnd - 1] == '\n') seqEnd--;
+      int lineEnd = indexOf(data, (byte)'\n', cursor);
+      if (lineEnd == -1) lineEnd = data.length;
 
-        if (seqEnd <= seqStart) { cursor = seqEnd; readNextMode3(); return; }
+      if (lineEnd == cursor) { cursor++; readNextMode3(); return; }
 
-        byte[] body = new byte[seqEnd - seqStart];
-        System.arraycopy(data, seqStart, body, 0, body.length);
-        cursor = seqEnd;
+      byte[] body = new byte[lineEnd - cursor];
+      System.arraycopy(data, cursor, body, 0, body.length);
+      cursor = lineEnd + 1;
 
-        String id;
-        int idx = (int)(seqIndex - 1);
-        if (headersTable != null && idx < headersTable.length) {
-            String h = headersTable[idx];
-            id = h.startsWith("@") ? h : "@" + h;
-        } else if (sraAccession != null) {
-            id = "@" + sraAccession + "." + seqIndex;
-        } else {
-            id = "@seq" + seqIndex;
-        }
+      String id;
+      int idx = (int)(seqIndex - 1);
+      if (headersTable != null && idx < headersTable.length) {
+          String h = headersTable[idx];
+          id = h.startsWith("@") ? h : "@" + h;
+      } else if (sraAccession != null) {
+          id = "@" + sraAccession + "." + seqIndex;
+      } else {
+          id = "@seq" + seqIndex;
+      }
 
-        nextSequence = new Sequence(this, decodeSequence(body), decodeQuality(body), id);
-        seqIndex++;
+      nextSequence = new Sequence(this, decodeSequence(body), decodeQuality(body), id);
+      seqIndex++;
     }
-
     private void loadSidecarHeaders() {
         String baseName = file.getName();
         int dot = baseName.lastIndexOf('.');
@@ -247,63 +241,27 @@ public class FASTRFile implements SequenceFile {
         } catch (IOException ignored) {}
     }
 
-    private int findValidatedHeader(int fromPos) {
-        int candidate;
-        if (fromPos < data.length && data[fromPos] == '@') {
-            candidate = fromPos;
-        } else {
-            int na = indexOfSeq(data, new byte[]{'\n', '@'}, fromPos);
-            if (na == -1) return -1;
-            candidate = na + 1;
-        }
-        while (candidate >= 0 && candidate < data.length) {
-            int nextXff = indexOf(data, (byte)0xFF, candidate);
-            int nextAt  = indexOfSeq(data, new byte[]{'\n', '@'}, candidate + 1);
-            if (nextAt != -1 && (nextXff == -1 || nextAt < nextXff)) {
-                candidate = nextAt + 1;
-                continue;
-            }
-            if (nextXff != -1) return candidate;
-            return -1;
-        }
-        return -1;
-    }
 
-    private int findBodyEnd(int seqStart) {
-        int candidateEnd = seqStart;
-        while (true) {
-            int nextAt = indexOfSeq(data, new byte[]{'\n', '@'}, candidateEnd);
-            if (nextAt == -1) {
-                int end = data.length;
-                while (end > seqStart && (data[end-1] == '\n' || data[end-1] == '\r' || data[end-1] == ' ')) end--;
-                return end;
-            }
-            int nextXff     = indexOf(data, (byte)0xFF, nextAt + 1);
-            int followingAt = indexOfSeq(data, new byte[]{'\n', '@'}, nextAt + 2);
-            if (followingAt != -1 && (nextXff == -1 || followingAt < nextXff)) {
-                candidateEnd = followingAt + 1;
-                continue;
-            }
-            return nextAt;
-        }
-    }
+
 
     private String decodeSequence(byte[] body) {
-        char[] bases = new char[body.length];
-        for (int i = 0; i < body.length; i++)
-            bases[i] = BASE_FOR_VALUE[body[i] & 0xFF];
-        return new String(bases);
+      char[] bases = new char[body.length];
+      for (int i = 0; i < body.length; i++) {
+          int v = (body[i] == NEWLINE_ESCAPE) ? 0x0A : (body[i] & 0xFF);
+          bases[i] = BASE_FOR_VALUE[v];
+      }
+      return new String(bases);
     }
 
     private String decodeQuality(byte[] body) {
-        char[] qual = new char[body.length];
-        for (int i = 0; i < body.length; i++) {
-            int v      = body[i] & 0xFF;
-            int scaled = Math.max(0, Math.min(63, v - LOWER_FOR_VALUE[v]));
-            int phred  = Math.max(0, Math.min(phredMax, INVERSE_SCALE[scaled]));
-            qual[i]    = (char)(phred + phredOffset);
-        }
-        return new String(qual);
+      char[] qual = new char[body.length];
+      for (int i = 0; i < body.length; i++) {
+          int v      = (body[i] == NEWLINE_ESCAPE) ? 0x0A : (body[i] & 0xFF);
+          int scaled = Math.max(0, Math.min(63, v - LOWER_FOR_VALUE[v]));
+          int phred  = Math.max(0, Math.min(phredMax, INVERSE_SCALE[scaled]));
+          qual[i]    = (char)(phred + phredOffset);
+      }
+      return new String(qual);
     }
 
     private String reconstructHeader(String miniContent) {
@@ -324,8 +282,8 @@ public class FASTRFile implements SequenceFile {
         for (int v = 0; v < 256; v++) { BASE_FOR_VALUE[v] = 'N'; LOWER_FOR_VALUE[v] = 0; }
         for (int v = gN; v < gA && v < 255; v++) { BASE_FOR_VALUE[v] = 'N'; LOWER_FOR_VALUE[v] = gN; }
         for (int v = gA; v < gG && v < 255; v++) { BASE_FOR_VALUE[v] = 'A'; LOWER_FOR_VALUE[v] = gA; }
-        for (int v = gG; v < gC && v < 255; v++) { BASE_FOR_VALUE[v] = 'G'; LOWER_FOR_VALUE[v] = gG; }
-        for (int v = gC; v < gT && v < 255; v++) { BASE_FOR_VALUE[v] = 'C'; LOWER_FOR_VALUE[v] = gC; }
+        for (int v = gG; v < gC && v < 255; v++) { BASE_FOR_VALUE[v] = 'C'; LOWER_FOR_VALUE[v] = gG; }
+        for (int v = gC; v < gT && v < 255; v++) { BASE_FOR_VALUE[v] = 'G'; LOWER_FOR_VALUE[v] = gC; }
         for (int v = gT; v < 255;      v++) { BASE_FOR_VALUE[v] = 'T'; LOWER_FOR_VALUE[v] = gT; }
     }
 
@@ -409,3 +367,4 @@ public class FASTRFile implements SequenceFile {
 
     public void remove() {}
 }
+
