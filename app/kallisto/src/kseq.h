@@ -215,27 +215,6 @@ typedef struct __kstring_t {
       seq->seq.m = 256;                                                                            \
       seq->seq.s = (char*)malloc(seq->seq.m);                                                      \
     }                                                                                              \
-    /* --- START OF FASTR MODIFICATION --- */                                                      \
-    if (seq->last_char == '@') {                                                                   \
-      int is_fastr = 0;                                                                            \
-      if (seq->comment.l > 0 && (unsigned char)seq->comment.s[seq->comment.l - 1] == 255) {        \
-        is_fastr = 1;                                                                              \
-        seq->comment.s[--seq->comment.l] = '\0';                                                   \
-      } else if (seq->name.l > 0 && (unsigned char)seq->name.s[seq->name.l - 1] == 255) {          \
-        is_fastr = 1;                                                                              \
-        seq->name.s[--seq->name.l] = '\0';                                                         \
-      }                                                                                            \
-      if (is_fastr) {                                                                              \
-        seq->seq.l = 0;                                                                            \
-        if ((r = ks_getuntil(seq->f, KS_SEP_LINE, &seq->seq, &c)) < 0)                             \
-          return r;                                                                                \
-        seq->qual.l = 0;                                                                           \
-        seq->is_fastq = 0;                                                                         \
-        seq->last_char = 0;                                                                        \
-        return seq->seq.l;                                                                         \
-      }                                                                                            \
-    }                                                                                              \
-    /* --- END OF FASTR MODIFICATION --- */                                                        \
     while ((c = ks_getc(ks)) >= 0 && c != '>' && c != '+' && c != '@') {                           \
       if (c == '\n')                                                                               \
         continue;                   /* skip empty lines */                                         \

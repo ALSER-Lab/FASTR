@@ -27,40 +27,6 @@ static size_t fastr_idx2(const std::vector<uint8_t>& d, uint8_t b0, uint8_t b1, 
       return i;
   return d.size();
 }
-static size_t fastr_validated_header(const std::vector<uint8_t>& d, size_t from) {
-  size_t c = (from < d.size() && d[from] == '@') ? from : fastr_idx2(d, '\n', '@', from) + 1;
-  if (c >= d.size())
-    return d.size();
-  while (c < d.size()) {
-    size_t nx = fastr_idx(d, 0xFF, c), na = fastr_idx2(d, '\n', '@', c + 1);
-    if (na < d.size() && (nx >= d.size() || na < nx)) {
-      c = na + 1;
-      continue;
-    }
-    if (nx < d.size())
-      return c;
-    return d.size();
-  }
-  return d.size();
-}
-static size_t fastr_body_end(const std::vector<uint8_t>& d, size_t s) {
-  size_t ce = s;
-  while (true) {
-    size_t na = fastr_idx2(d, '\n', '@', ce);
-    if (na >= d.size()) {
-      size_t e = d.size();
-      while (e > s && (d[e - 1] == '\n' || d[e - 1] == '\r' || d[e - 1] == ' '))
-        e--;
-      return e;
-    }
-    size_t nx = fastr_idx(d, 0xFF, na + 1), fa = fastr_idx2(d, '\n', '@', na + 2);
-    if (fa < d.size() && (nx >= d.size() || fa < nx)) {
-      ce = fa + 1;
-      continue;
-    }
-    return na;
-  }
-}
 static bool fastr_load(const std::string& path, std::vector<uint8_t>& data,
                        std::array<char, 256>& base) {
   FILE* fp = fopen(path.c_str(), "rb");
@@ -117,8 +83,8 @@ static bool fastr_load(const std::string& path, std::vector<uint8_t>& data,
         if (gv2.size() >= 5) {
           gN = gv2[0];
           gA = gv2[1];
-          gG = gv2[2];
-          gC = gv2[3];
+          gC = gv2[2];
+          gG = gv2[3];
           gT = gv2[4];
         }
       }
@@ -133,9 +99,9 @@ static bool fastr_load(const std::string& path, std::vector<uint8_t>& data,
   for (int i = gA; i < gG && i < 255; i++)
     base[i] = 'A';
   for (int i = gG; i < gC && i < 255; i++)
-    base[i] = 'G';
-  for (int i = gC; i < gT && i < 255; i++)
     base[i] = 'C';
+  for (int i = gC; i < gT && i < 255; i++)
+    base[i] = 'G';
   for (int i = gT; i < 255; i++)
     base[i] = 'T';
   return true;
@@ -3549,23 +3515,27 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
       if (is_fastr_file[i] && l[i] >= 0) {
         auto& fd = fastr_data[i];
         auto& fc = fastr_cursor[i];
-        size_t hs = fastr_validated_header(fd, fc);
+
+        size_t hs = fc;
+        while (hs < fd.size() && fd[hs] != '@')
+          hs++;
         if (hs >= fd.size()) {
           l[i] = -1;
           continue;
         }
-        size_t xp = fastr_idx(fd, 0xFF, hs);
-        if (xp >= fd.size()) {
+        size_t headerEnd = fastr_idx(fd, '\n', hs);
+        if (headerEnd >= fd.size()) {
           l[i] = -1;
           continue;
         }
-        std::string hc(fd.begin() + hs + 1, fd.begin() + xp);
-        while (!hc.empty() && (hc.back() == '\r' || hc.back() == '\n' || hc.back() == ' '))
+        std::string hc(fd.begin() + hs + 1, fd.begin() + headerEnd);
+        while (!hc.empty() && (hc.back() == '\r' || hc.back() == ' '))
           hc.pop_back();
-        size_t ss = xp + 1;
-        if (ss < fd.size() && fd[ss] == '\n')
-          ss++;
-        size_t se = fastr_body_end(fd, ss);
+        size_t ss = headerEnd + 1;
+        size_t se = fastr_idx(fd, '\n', ss);
+        if (se >= fd.size())
+          se = fd.size();
+
         fastr_ss[i] = ss;
         fastr_se[i] = se;
         fastr_blen[i] = se - ss;
@@ -3619,8 +3589,10 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
             fc = se;
             l[i] = (int)blen;
             char* pi = buf + bufpos;
-            for (size_t bi = 0; bi < blen; bi++)
-              pi[bi] = fb[fd[ss + bi] & 0xFF];
+            for (size_t bi = 0; bi < blen; bi++) {
+              uint8_t b = fd[ss + bi];
+              pi[bi] = fb[(b == 0xFF) ? 0x0A : (b & 0xFF)];
+            }
             pi[blen] = '\0';
             bufpos += blen + 1;
             seqs.emplace_back(pi, (int)blen);
