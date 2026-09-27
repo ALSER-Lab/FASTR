@@ -14,99 +14,6 @@
 #include "Node.hpp"
 #include "PseudoBam.h"
 
-// --- START: ALSER FASTR ---
-static size_t fastr_idx(const std::vector<uint8_t>& d, uint8_t b, size_t f) {
-  for (size_t i = f; i < d.size(); i++)
-    if (d[i] == b)
-      return i;
-  return d.size();
-}
-static size_t fastr_idx2(const std::vector<uint8_t>& d, uint8_t b0, uint8_t b1, size_t f) {
-  for (size_t i = f; i + 1 < d.size(); i++)
-    if (d[i] == b0 && d[i + 1] == b1)
-      return i;
-  return d.size();
-}
-static bool fastr_load(const std::string& path, std::vector<uint8_t>& data,
-                       std::array<char, 256>& base) {
-  FILE* fp = fopen(path.c_str(), "rb");
-  if (!fp)
-    return false;
-  fseek(fp, 0, SEEK_END);
-  size_t sz = ftell(fp);
-  rewind(fp);
-  data.resize(sz);
-  if (fread(data.data(), 1, sz, fp) != sz) {
-    fclose(fp);
-    return false;
-  }
-  fclose(fp);
-  if (sz < 7 || data[0] != '#')
-    return false;
-  std::string hdr(data.begin(), data.begin() + std::min(sz, (size_t)4096));
-  if (hdr.find("#MODE=") == std::string::npos)
-    return false;
-  int mode = 2, gN = 0, gA = 3, gG = 66, gC = 129, gT = 192;
-  size_t pos = 0;
-  while (pos < data.size()) {
-    size_t le = fastr_idx(data, '\n', pos);
-    if (le >= data.size())
-      le = data.size();
-    std::string line(data.begin() + pos, data.begin() + le);
-    pos = le + 1;
-    if (!line.empty() && line.back() == '\r')
-      line.pop_back();
-    if (!line.empty() && line[0] == '@')
-      break;
-    if (line.size() > 1 && line[0] == '#' && line.find('=') != std::string::npos) {
-      auto eq = line.find('=');
-      std::string k = line.substr(1, eq - 1), v = line.substr(eq + 1);
-      for (auto& c : k)
-        c = toupper(c);
-      if (k == "MODE") {
-        try {
-          mode = std::stoi(v);
-        } catch (...) {
-        }
-      } else if (k == "GRAY_VALS") {
-        std::string gv = v;
-        gv.erase(std::remove(gv.begin(), gv.end(), '['), gv.end());
-        gv.erase(std::remove(gv.begin(), gv.end(), ']'), gv.end());
-        std::istringstream ss(gv);
-        std::string tok;
-        std::vector<int> gv2;
-        while (std::getline(ss, tok, ','))
-          try {
-            gv2.push_back(std::stoi(tok));
-          } catch (...) {
-          }
-        if (gv2.size() >= 5) {
-          gN = gv2[0];
-          gA = gv2[1];
-          gC = gv2[2];
-          gG = gv2[3];
-          gT = gv2[4];
-        }
-      }
-    }
-  }
-  if (mode != 1 && mode != 2)
-    return false;
-  for (int i = 0; i < 256; i++)
-    base[i] = 'N';
-  for (int i = gN; i < gA && i < 255; i++)
-    base[i] = 'N';
-  for (int i = gA; i < gG && i < 255; i++)
-    base[i] = 'A';
-  for (int i = gG; i < gC && i < 255; i++)
-    base[i] = 'C';
-  for (int i = gC; i < gT && i < 255; i++)
-    base[i] = 'G';
-  for (int i = gT; i < 255; i++)
-    base[i] = 'T';
-  return true;
-}
-// --- END: ALSER FASTR ---
 
 void printVector(const std::vector<int>& v, std::ostream& o) {
   o << "[";
@@ -3438,12 +3345,6 @@ void FastqSequenceReader::reserveNfiles(int n) {
   l.resize(nfiles, 0);
   nl.resize(nfiles, 0);
   seq.resize(nfiles, nullptr);
-  // --- START: ALSER FASTR ---
-  is_fastr_file.resize(nfiles, false);
-  fastr_data.resize(nfiles);
-  fastr_cursor.resize(nfiles, 0);
-  fastr_base_table.resize(nfiles);
-  // --- END: ALSER FASTR ---
 }
 
 // returns true if there is more left to read from the files
@@ -3486,64 +3387,17 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
         }
 
         // open the next one
-        // --- START: ALSER FASTR ---
         for (int i = 0; i < nfiles; i++) {
           std::string fname = (files[0] == "-" && nfiles == 1) ? "-" : files[current_file + i];
-          is_fastr_file[i] = false;
-          fastr_cursor[i] = 0;
-          if (fname != "-")
-            is_fastr_file[i] = fastr_load(fname, fastr_data[i], fastr_base_table[i]);
-          if (is_fastr_file[i]) {
-            l[i] = fastr_cursor[i] < fastr_data[i].size() ? 1 : -1;
-          } else {
-            fp[i] = fname == "-" ? gzdopen(fileno(stdin), "r") : gzopen(fname.c_str(), "r");
-            seq[i] = kseq_init(fp[i]);
-            l[i] = kseq_read(seq[i]);
-          }
+          fp[i] = fname == "-" ? gzdopen(fileno(stdin), "r") : gzopen(fname.c_str(), "r");
+          seq[i] = kseq_init(fp[i]);
+          l[i] = kseq_read(seq[i]);
         }
-        // --- END: ALSER FASTR ---
         current_file += nfiles;
         state = true;
       }
     }
     // the file is open and we have read into seq1 and seq2
-    // --- START: ALSER FASTR ---
-    // pre-compute FASTR body lengths for accurate bufadd
-    std::vector<size_t> fastr_ss(nfiles, 0), fastr_se(nfiles, 0), fastr_blen(nfiles, 0);
-    std::vector<std::string> fastr_hc(nfiles);
-    for (int i = 0; i < nfiles; i++) {
-      if (is_fastr_file[i] && l[i] >= 0) {
-        auto& fd = fastr_data[i];
-        auto& fc = fastr_cursor[i];
-
-        size_t hs = fc;
-        while (hs < fd.size() && fd[hs] != '@')
-          hs++;
-        if (hs >= fd.size()) {
-          l[i] = -1;
-          continue;
-        }
-        size_t headerEnd = fastr_idx(fd, '\n', hs);
-        if (headerEnd >= fd.size()) {
-          l[i] = -1;
-          continue;
-        }
-        std::string hc(fd.begin() + hs + 1, fd.begin() + headerEnd);
-        while (!hc.empty() && (hc.back() == '\r' || hc.back() == ' '))
-          hc.pop_back();
-        size_t ss = headerEnd + 1;
-        size_t se = fastr_idx(fd, '\n', ss);
-        if (se >= fd.size())
-          se = fd.size();
-
-        fastr_ss[i] = ss;
-        fastr_se[i] = se;
-        fastr_blen[i] = se - ss;
-        fastr_hc[i] = std::move(hc);
-        l[i] = (int)fastr_blen[i];
-      }
-    }
-    // --- END: ALSER FASTR ---
     bool all_l = true;
     int bufadd = nfiles;
     for (int i = 0; i < nfiles; i++) {
@@ -3554,13 +3408,8 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
       // fits into the buffer
       if (full) {
         for (int i = 0; i < nfiles; i++) {
-          if (is_fastr_file[i]) {
-            nl[i] = 0;
-            bufadd += l[i] * 2;
-          } else {
-            nl[i] = seq[i]->name.l + (comments ? seq[i]->comment.l + 1 : 0);
-            bufadd += l[i] + nl[i];
-          }
+          nl[i] = seq[i]->name.l + (comments ? seq[i]->comment.l + 1 : 0);
+          bufadd += l[i] + nl[i];
         }
         bufadd += 2 * pad;
       }
@@ -3573,43 +3422,7 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
           count++;
         }
 
-        // --- START: ALSER FASTR ---
         for (int i = 0; i < nfiles; i++) {
-          if (is_fastr_file[i]) {
-            size_t blen = fastr_blen[i];
-            size_t ss = fastr_ss[i];
-            size_t se = fastr_se[i];
-            auto& fd = fastr_data[i];
-            auto& fc = fastr_cursor[i];
-            auto& fb = fastr_base_table[i];
-            if (blen == 0) {
-              l[i] = -1;
-              continue;
-            }
-            fc = se;
-            l[i] = (int)blen;
-            char* pi = buf + bufpos;
-            for (size_t bi = 0; bi < blen; bi++) {
-              uint8_t b = fd[ss + bi];
-              pi[bi] = fb[(b == 0xFF) ? 0x0A : (b & 0xFF)];
-            }
-            pi[blen] = '\0';
-            bufpos += blen + 1;
-            seqs.emplace_back(pi, (int)blen);
-            if (full) {
-              pi = buf + bufpos;
-              memset(pi, 'I', blen);
-              pi[blen] = '\0';
-              bufpos += blen + 1;
-              quals.emplace_back(pi, (int)blen);
-              pi = buf + bufpos;
-              const std::string& hc = fastr_hc[i];
-              memcpy(pi, hc.c_str(), hc.size() + 1);
-              bufpos += hc.size() + 1;
-              names.emplace_back(pi, (int)hc.size());
-            }
-            continue;
-          }
           char* pi = buf + bufpos;
           memcpy(pi, seq[i]->seq.s, l[i] + 1);
           bufpos += l[i] + 1;
@@ -3654,7 +3467,6 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
             }
           }
         }
-        // --- END: ALSER FASTR ---
 
         numreads++;
         flags.push_back(numreads - 1);
@@ -3669,15 +3481,9 @@ bool FastqSequenceReader::fetchSequences(char* buf, const int limit,
 
       // read for the next one
       // read for the next one
-      // --- START: ALSER FASTR ---
       for (int i = 0; i < nfiles; i++) {
-        if (is_fastr_file[i]) {
-          l[i] = fastr_cursor[i] < fastr_data[i].size() ? 1 : -1;
-          continue;
-        }
         l[i] = kseq_read(seq[i]);
       }
-      // --- END: ALSER FASTR ---
     } else {
       state = false;  // haven't opened file yet
     }

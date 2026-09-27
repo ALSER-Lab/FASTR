@@ -59,13 +59,6 @@ class SequenceReader {
 
 class FastqSequenceReader : public SequenceReader {
  public:
-  // --- START: ALSER FASTR per-file state ---
-  std::vector<bool> is_fastr_file;
-  std::vector<std::vector<uint8_t>> fastr_data;
-  std::vector<size_t> fastr_cursor;
-  std::vector<std::array<char, 256>> fastr_base_table;
-  // --- END: ALSER FASTR per-file state ---
-
   FastqSequenceReader(const ProgramOptions& opt)
       : SequenceReader(opt), current_file(0), paired(!opt.single_end), f_umi(new std::ifstream{}) {
     SequenceReader::state = false;

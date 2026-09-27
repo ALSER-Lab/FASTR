@@ -1,371 +1,331 @@
+///CHANGE: ALSER LAB///
 package uk.ac.babraham.FastQC.Sequence;
 
 import java.io.*;
-import java.util.*;
-import javax.script.*;
+import java.nio.charset.StandardCharsets;
 
 import uk.ac.babraham.FastQC.FastQCConfig;
 
 public class FASTRFile implements SequenceFile {
 
-    private static final byte NEWLINE_ESCAPE = (byte)0xFF;
+    private static final int BUFSIZE = 1 << 16;
 
     private final File file;
-    private final long fileSize;
     private final String name;
     private final FileInputStream fis;
+    private final long fileSize;
 
-    private Sequence nextSequence = null;
-    private long seqIndex = 1;
+    private final byte[] buf = new byte[BUFSIZE];
+    private int begin = 0, end = 0;
+    private boolean isEof = false;
 
-    private int mode = 2;
-    private int phredOffset = 33;
-    private int phredMax = 93;
-    private String sraAccession = null;
-    private String structureTemplate = null;
-    private String qualScaleFormula = "x";
+    private byte[] line = new byte[1 << 12];
+    private int lineLen = 0;
+    private byte[] seqBuf = new byte[1 << 12];
+    private byte[] qualBuf = new byte[1 << 12];
 
-    private String[] headersTable = null;
+    private int enc = 0;
+    private int maxPhred = 93;
+    private int nPhred = 2;
+    private final int[] inverse = new int[64];
+    private final short[] byteLut = new short[256];
+    private final short[] nonetLut = new short[256];
+    private final short[] nibBase2 = new short[256];
+    private final short[] nibQual2 = new short[256];
+    private final byte[] nibCnt = new byte[256];
+    private final int[] nibLut = new int[256];
 
-    private final char[] BASE_FOR_VALUE  = new char[256];
-    private final int[]  LOWER_FOR_VALUE = new int[256];
-    private final int[]  INVERSE_SCALE   = new int[64];
-
-    private byte[] data;
-    private int cursor = 0;
+    private Sequence nextSequence;
 
     protected FASTRFile(FastQCConfig config, File file) throws SequenceFormatException, IOException {
-        this.file     = file;
+        this.file = file;
+        this.name = file.getName();
         this.fileSize = file.length();
-        this.name     = file.getName();
+        this.fis = new FileInputStream(file);
 
-        fis = new FileInputStream(file);
-        data = fis.readAllBytes();
-
-        int gN = 0, gA = 3, gG = 66, gC = 129, gT = 192;
-        Map<String, String> meta = new HashMap<>();
-
-        int pos = 0;
-        while (pos < data.length) {
-            int lineEnd = indexOf(data, (byte)'\n', pos);
-            if (lineEnd == -1) lineEnd = data.length;
-            String line = new String(data, pos, lineEnd - pos, "UTF-8").trim();
-            pos = lineEnd + 1;
-            if (line.startsWith("@")) { cursor = lineEnd - line.length(); break; }
-            if (line.startsWith("#") && line.contains("=")) {
-                String[] kv = line.substring(1).split("=", 2);
-                meta.put(kv[0].trim().toUpperCase(), kv[1].trim());
-            }
-        }
-
-        if (meta.containsKey("MODE")) {
-            try { mode = Integer.parseInt(meta.get("MODE")); } catch (NumberFormatException ignored) {}
-        }
-        if (meta.containsKey("ACCESSION")) {
-            String acc = meta.get("ACCESSION");
-            if (!acc.isEmpty()) sraAccession = acc;
-        }
-        if (meta.containsKey("PHRED-ALPHABET")) {
-            String pa = meta.get("PHRED-ALPHABET");
-            if (pa.startsWith("PHRED_")) {
-                try { phredMax = Integer.parseInt(pa.substring(6)) - 1; } catch (NumberFormatException ignored) {}
-            }
-        }
-        if (meta.containsKey("STRUCTURE")) {
-            structureTemplate = meta.get("STRUCTURE");
-        }
-        if (meta.containsKey("GRAY_VALS")) {
-            String gv = meta.get("GRAY_VALS").replaceAll("[\\[\\]\\s]", "");
-            String[] parts = gv.split(",");
-            if (parts.length >= 5) {
-                try {
-                  gN = Integer.parseInt(parts[0]);
-                  gA = Integer.parseInt(parts[1]);
-                  gC = Integer.parseInt(parts[2]);
-                  gG = Integer.parseInt(parts[3]);
-                  gT = Integer.parseInt(parts[4]);
-                } catch (NumberFormatException ignored) {}
-            }
-        }
-        if (meta.containsKey("QUAL_SCALE") && !meta.get("QUAL_SCALE").isEmpty()) {
-            qualScaleFormula = convertFormula(meta.get("QUAL_SCALE"));
-        }
-        buildLookupTables(gN, gA, gC, gG, gT);
-        buildInverseScaleTable();
-        if (mode == 3) loadSidecarHeaders();
+        int c = getc();
+        if (c != '#') throw new SequenceFormatException("Not a FASTR file (first byte is not '#'): " + name);
+        parseHeader();
         readNext();
     }
 
-    private String convertFormula(String formula) {
+    private int fill() throws IOException {
+        begin = 0;
+        int n = 0;
+        while (n < BUFSIZE) {
+            int r = fis.read(buf, n, BUFSIZE - n);
+            if (r < 0) { isEof = true; break; }
+            n += r;
+        }
+        end = n;
+        return n;
+    }
 
-        String f = formula.trim().replaceAll("^\\s*f\\s*\\(\\s*x\\s*\\)\\s*=\\s*", "");
-        f = f.replace("^", "**");
-        f = f.replaceAll("\\bln\\s*\\(", "Math.log(");
-        f = f.replaceAll("\\blog10\\s*\\(", "Math.log10(");
-        f = f.replaceAll("\\blog\\s*\\(", "Math.log(");
-        f = f.replaceAll("\\bexp\\s*\\(", "Math.exp(");
-        f = f.replaceAll("\\bsqrt\\s*\\(", "Math.sqrt(");
-        f = f.replaceAll("\\babs\\s*\\(", "Math.abs(");
-        return f;
+    private int getc() throws IOException {
+        if (begin >= end) {
+            if (isEof) return -1;
+            if (fill() == 0) return -1;
+        }
+        return buf[begin++] & 0xFF;
+    }
+
+    private int getLine() throws IOException {
+        lineLen = 0;
+        if (begin >= end && isEof) return -1;
+        boolean gotAny = false;
+        for (;;) {
+            if (begin >= end) {
+                if (isEof || fill() == 0) break;
+            }
+            int i = begin;
+            while (i < end && buf[i] != '\n') ++i;
+            int n = i - begin;
+            if (lineLen + n > line.length) {
+                byte[] nl = new byte[Math.max(line.length * 2, lineLen + n)];
+                System.arraycopy(line, 0, nl, 0, lineLen);
+                line = nl;
+            }
+            System.arraycopy(buf, begin, line, lineLen, n);
+            lineLen += n;
+            gotAny = true;
+            begin = i + 1;
+            if (i < end) return lineLen;
+        }
+        return gotAny ? lineLen : -1;
+    }
+
+    private static int unescape(int b) {
+        return b == 255 ? 10 : b == 254 ? 64 : b;
+    }
+
+    private static int[] parseIntCsv(String s, int maxn) {
+        int[] out = new int[maxn];
+        int n = 0;
+        for (String t : s.split("[,\\s]+")) {
+            if (t.isEmpty()) continue;
+            if (n >= maxn) break;
+            try { out[n++] = Integer.parseInt(t); } catch (NumberFormatException e) { break; }
+        }
+        int[] r = new int[n];
+        System.arraycopy(out, 0, r, 0, n);
+        return r;
+    }
+
+    private static String value(String l, String key) {
+        String k = key + "=";
+        if (l.startsWith(k)) return l.substring(k.length());
+        if (l.startsWith("#" + k)) return l.substring(k.length() + 1);
+        return null;
+    }
+
+    private void parseHeader() throws IOException {
+        int[] gray = {0, 1, 64, 127, 190};
+        String qmap = null, qdec = null, v;
+        for (int i = 0; ; ++i) {
+            if (i > 0) {
+                int nc = getc();
+                if (nc != '#') { if (nc >= 0) --begin; break; }
+            }
+            if (getLine() < 0) break;
+            String l = new String(line, 0, lineLen, StandardCharsets.ISO_8859_1);
+            if ((v = value(l, "ENCODING")) != null) {
+                enc = v.startsWith("nibble") ? 1 : v.startsWith("nonet") ? 2 : 0;
+            } else if ((v = value(l, "GRAY_VALS")) != null) {
+                int[] g = parseIntCsv(v, 5);
+                System.arraycopy(g, 0, gray, 0, g.length);
+            } else if ((v = value(l, "QUALITY_MAP")) != null) {
+                qmap = v;
+            } else if ((v = value(l, "QUALITY_DECODE")) != null) {
+                qdec = v;
+            } else if ((v = value(l, "N_QUALITY")) != null) {
+                if (!v.isEmpty()) nPhred = v.charAt(0) - 33;
+            }
+        }
+
+        int gA = gray[1], gC = gray[2], gG = gray[3], gT = gray[4];
+        char[] base = new char[256];
+        int[] bandStart = new int[256];
+        for (int j = 0; j < 256; ++j) { base[j] = 'N'; bandStart[j] = 0; }
+        for (int j = gA; j < gC && j < 256; ++j) { base[j] = 'A'; bandStart[j] = gA; }
+        for (int j = gC; j < gG && j < 256; ++j) { base[j] = 'C'; bandStart[j] = gC; }
+        for (int j = gG; j < gT && j < 256; ++j) { base[j] = 'G'; bandStart[j] = gG; }
+        for (int j = gT; j < gT + 63 && j < 253; ++j) { base[j] = 'T'; bandStart[j] = gT; }
+        for (int j = 0; j < 256; ++j) {
+            int ub = unescape(j);
+            base[j] = base[ub];
+            bandStart[j] = bandStart[ub];
+        }
+
+        buildInverse(qmap);
+        applyDecode(qdec);
+
+        for (int j = 0; j < 256; ++j) {
+            char c = base[j];
+            int val;
+            if (c == 'N') val = nPhred;
+            else {
+                int y = unescape(j) - bandStart[j];
+                if (y < 0) y = 0;
+                if (y > 63) y = 63;
+                val = inverse[y > 62 ? 62 : y];
+            }
+            if (val < 0) val = 0;
+            if (val > maxPhred) val = maxPhred;
+            byteLut[j] = (short) (c | ((33 + val) << 8));
+
+            int q;
+            if (c == 'N') q = nPhred;
+            else {
+                q = unescape(j) - bandStart[j];
+                if (q < 0) q = 0;
+                if (q > maxPhred) q = maxPhred;
+            }
+            nonetLut[j] = (short) (c | ((q & 0xFF) << 8));
+        }
+
+        char[] nb = new char[16];
+        int[] ns = new int[16];
+        nb[0] = 'N';
+        for (int j = 1; j <= 3; ++j)   { nb[j] = 'A'; ns[j] = j - 1; }
+        for (int j = 4; j <= 6; ++j)   { nb[j] = 'C'; ns[j] = j - 4; }
+        for (int j = 7; j <= 9; ++j)   { nb[j] = 'G'; ns[j] = j - 7; }
+        for (int j = 10; j <= 12; ++j) { nb[j] = 'T'; ns[j] = j - 10; }
+        for (int j = 0; j < 256; ++j) {
+            int ub = unescape(j), hi = ub >> 4, lo = ub & 0x0F, packed = 0;
+            if (hi <= 12 && nb[hi] != 0) {
+                int val = nb[hi] == 'N' ? nPhred : inverse[ns[hi]];
+                val = Math.max(0, Math.min(maxPhred, val));
+                packed |= nb[hi] | ((33 + val) << 8);
+            }
+            if (lo <= 12 && nb[lo] != 0) {
+                int val = nb[lo] == 'N' ? nPhred : inverse[ns[lo]];
+                val = Math.max(0, Math.min(maxPhred, val));
+                packed |= (nb[lo] << 16) | ((33 + val) << 24);
+            }
+            nibLut[j] = packed;
+            nibBase2[j] = (short) ((packed & 0xFF) | (((packed >>> 16) & 0xFF) << 8));
+            nibQual2[j] = (short) (((packed >>> 8) & 0xFF) | (((packed >>> 24) & 0xFF) << 8));
+            nibCnt[j] = (byte) (((packed & 0xFF) != 0 ? 1 : 0) + ((packed & 0xFF0000) != 0 ? 1 : 0));
+        }
+    }
+
+    private void buildInverse(String qmapCsv) {
+        for (int i = 0; i < 64; ++i) inverse[i] = 0;
+        if (qmapCsv == null || qmapCsv.isEmpty()) return;
+        int[] raw = parseIntCsv(qmapCsv, 94);
+        int n = raw.length, maxSlot = 0;
+        int[] lut = new int[n];
+        for (int k = 0; k < n; ++k) lut[k] = Math.max(0, Math.min(63, raw[k]));
+        for (int k = 0; k < n; ++k) if (lut[k] > maxSlot) maxSlot = lut[k];
+        for (int k = 0; k < n; ++k) { int s = lut[k]; if (s >= 1 && s <= 63) inverse[s - 1] = k; }
+        if (maxSlot >= 1 && maxSlot <= 63) {
+            int rep = -1;
+            for (int k = 0; k < n; ++k) if (lut[k] == maxSlot) { rep = k; break; }
+            inverse[maxSlot - 1] = rep < 0 ? 0 : rep;
+        }
+    }
+
+    private void applyDecode(String qdecCsv) {
+        if (qdecCsv == null || qdecCsv.isEmpty()) return;
+        int[] v = parseIntCsv(qdecCsv, 64);
+        for (int i = 0; i < v.length; ++i) inverse[i] = Math.max(0, Math.min(93, v[i]));
+    }
+
+    private void ensure(int need) {
+        if (seqBuf.length < need) {
+            int m = Integer.highestOneBit(need - 1) << 1;
+            seqBuf = new byte[m];
+            qualBuf = new byte[m];
+        }
+    }
+
+    private void readNext() throws SequenceFormatException {
+        try {
+            nextSequence = null;
+            if (getc() < 0) return;
+            if (getLine() < 0) return;
+            String id = "@" + new String(line, 0, lineLen, StandardCharsets.ISO_8859_1);
+            if (getLine() < 0) throw new SequenceFormatException("Truncated FASTR record after " + id);
+
+            final byte[] raw = line;
+            final int rl = lineLen;
+            ensure((enc == 1 ? rl * 2 : rl) + 2);
+            final byte[] sq = seqBuf, qu = qualBuf;
+            int L;
+
+            if (enc == 1) {
+                L = 0;
+                int nfull = rl > 0 ? rl - 1 : 0;
+                for (int i = 0; i < nfull; ++i) {
+                    int b = raw[i] & 0xFF;
+                    short bb = nibBase2[b], qq = nibQual2[b];
+                    sq[L] = (byte) bb; sq[L + 1] = (byte) (bb >> 8);
+                    qu[L] = (byte) qq; qu[L + 1] = (byte) (qq >> 8);
+                    L += nibCnt[b];
+                }
+                if (rl > 0) {
+                    int v = nibLut[raw[rl - 1] & 0xFF];
+                    if ((v & 0xFF) != 0)     { sq[L] = (byte) v;          qu[L] = (byte) (v >>> 8);  ++L; }
+                    if ((v & 0xFF0000) != 0) { sq[L] = (byte) (v >>> 16); qu[L] = (byte) (v >>> 24); ++L; }
+                }
+            } else if (enc == 2) {
+                int sep = -1;
+                for (int i = 0; i < rl; ++i) if (raw[i] == (byte) 0xFD) { sep = i; break; }
+                L = sep >= 0 ? sep : rl;
+                final int mp = maxPhred;
+                if (sep >= 0) {
+                    int bit = sep + 1;
+                    for (int k = 0; k < L; ++k) {
+                        int v = nonetLut[raw[k] & 0xFF];
+                        int ph = ((v >> 8) & 0xFF) + 63 * (((raw[bit + k / 7] & 0xFF) >> (k % 7)) & 1);
+                        if (ph > mp) ph = mp;
+                        sq[k] = (byte) v;
+                        qu[k] = (byte) (33 + ph);
+                    }
+                } else {
+                    for (int k = 0; k < L; ++k) {
+                        int v = nonetLut[raw[k] & 0xFF];
+                        sq[k] = (byte) v;
+                        qu[k] = (byte) (33 + ((v >> 8) & 0xFF));
+                    }
+                }
+            } else {
+                L = rl;
+                for (int i = 0; i < L; ++i) {
+                    short v = byteLut[raw[i] & 0xFF];
+                    sq[i] = (byte) v;
+                    qu[i] = (byte) (v >> 8);
+                }
+            }
+
+            nextSequence = new Sequence(this,
+                    new String(sq, 0, L, StandardCharsets.ISO_8859_1),
+                    new String(qu, 0, L, StandardCharsets.ISO_8859_1),
+                    id);
+        } catch (IOException e) {
+            throw new SequenceFormatException(e.getMessage());
+        }
     }
 
     @Override public String  name()         { return name; }
     @Override public boolean isColorspace() { return false; }
     @Override public File    getFile()      { return file; }
     @Override public boolean hasNext()      { return nextSequence != null; }
+    public void remove() {}
 
-    @Override
-    public Sequence next() throws SequenceFormatException {
+    @Override public int getPercentComplete() {
+        if (!hasNext() || fileSize == 0) return 100;
+        try {
+            return (int) Math.min(100, fis.getChannel().position() * 100 / fileSize);
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    @Override public Sequence next() throws SequenceFormatException {
         Sequence s = nextSequence;
         readNext();
         return s;
     }
-
-    @Override
-    public int getPercentComplete() {
-        if (!hasNext()) return 100;
-        return (int)((double) cursor / data.length * 100);
-    }
-
-    private void readNext() throws SequenceFormatException {
-        try {
-            if      (mode == 0)              readNextMode0();
-            else if (mode == 1 || mode == 2) readNextMode1or2();
-            else if (mode == 3)              readNextMode3();
-            else throw new SequenceFormatException("Unknown FASTR mode: " + mode);
-        } catch (IOException ioe) {
-            throw new SequenceFormatException(ioe.getMessage());
-        }
-    }
-
-    private void readNextMode0() throws IOException, SequenceFormatException {
-        while (cursor < data.length && data[cursor] != '@') cursor++;
-        if (cursor >= data.length) { nextSequence = null; return; }
-
-        int line1End = indexOf(data, (byte)'\n', cursor);
-        if (line1End == -1) { nextSequence = null; return; }
-        String miniHeader = new String(data, cursor + 1, line1End - cursor - 1, "UTF-8").trim();
-        cursor = line1End + 1;
-
-        int line2End = indexOf(data, (byte)'\n', cursor);
-        if (line2End == -1) throw new SequenceFormatException("Mode 0: truncated seq");
-        String seq = new String(data, cursor, line2End - cursor, "UTF-8").trim();
-        cursor = line2End + 1;
-
-        int line3End = indexOf(data, (byte)'\n', cursor);
-        if (line3End == -1) throw new SequenceFormatException("Mode 0: truncated mid");
-        cursor = line3End + 1;
-
-        int qualEnd = cursor + seq.length();
-        if (qualEnd > data.length) throw new SequenceFormatException("Mode 0: truncated quality");
-        String quality = new String(data, cursor, seq.length(), "UTF-8");
-        cursor = qualEnd;
-        if (cursor < data.length && data[cursor] == '\n') cursor++;
-
-        String id = reconstructHeader(miniHeader);
-        nextSequence = new Sequence(this, seq.toUpperCase(), quality, id);
-        seqIndex++;
-    }
-
-    private void readNextMode1or2() throws IOException, SequenceFormatException {
-      while (cursor < data.length && data[cursor] != '@') cursor++;
-      if (cursor >= data.length) { nextSequence = null; return; }
-
-      int headerEnd = indexOf(data, (byte)'\n', cursor);
-      if (headerEnd == -1) { nextSequence = null; return; }
-
-      String headerContent = new String(data, cursor + 1, headerEnd - cursor - 1, "UTF-8").trim();
-      cursor = headerEnd + 1;
-
-      int bodyEnd = indexOf(data, (byte)'\n', cursor);
-      if (bodyEnd == -1) bodyEnd = data.length;
-
-      byte[] body = new byte[bodyEnd - cursor];
-      System.arraycopy(data, cursor, body, 0, body.length);
-      cursor = bodyEnd + 1;
-
-      String id      = reconstructHeader(headerContent);
-      String seq     = decodeSequence(body);
-      String quality = decodeQuality(body);
-
-      nextSequence = new Sequence(this, seq, quality, id);
-      seqIndex++;
-    }
-
-    private void readNextMode3() throws IOException, SequenceFormatException {
-      if (cursor >= data.length) { nextSequence = null; return; }
-
-      int lineEnd = indexOf(data, (byte)'\n', cursor);
-      if (lineEnd == -1) lineEnd = data.length;
-
-      if (lineEnd == cursor) { cursor++; readNextMode3(); return; }
-
-      byte[] body = new byte[lineEnd - cursor];
-      System.arraycopy(data, cursor, body, 0, body.length);
-      cursor = lineEnd + 1;
-
-      String id;
-      int idx = (int)(seqIndex - 1);
-      if (headersTable != null && idx < headersTable.length) {
-          String h = headersTable[idx];
-          id = h.startsWith("@") ? h : "@" + h;
-      } else if (sraAccession != null) {
-          id = "@" + sraAccession + "." + seqIndex;
-      } else {
-          id = "@seq" + seqIndex;
-      }
-
-      nextSequence = new Sequence(this, decodeSequence(body), decodeQuality(body), id);
-      seqIndex++;
-    }
-    private void loadSidecarHeaders() {
-        String baseName = file.getName();
-        int dot = baseName.lastIndexOf('.');
-        String stem = (dot >= 0) ? baseName.substring(0, dot) : baseName;
-        File dir = file.getParentFile();
-        if (dir == null) dir = new File(".");
-
-        File sidecar = new File(dir, stem + "_headers.txt");
-        if (!sidecar.exists()) return;
-
-        try {
-            List<String> lines = new ArrayList<>();
-            BufferedReader br = new BufferedReader(new FileReader(sidecar));
-            String line;
-            while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (!line.isEmpty()) lines.add(line);
-            }
-            br.close();
-            headersTable = lines.toArray(new String[0]);
-        } catch (IOException ignored) {}
-    }
-
-
-
-
-    private String decodeSequence(byte[] body) {
-      char[] bases = new char[body.length];
-      for (int i = 0; i < body.length; i++) {
-          int v = (body[i] == NEWLINE_ESCAPE) ? 0x0A : (body[i] & 0xFF);
-          bases[i] = BASE_FOR_VALUE[v];
-      }
-      return new String(bases);
-    }
-
-    private String decodeQuality(byte[] body) {
-      char[] qual = new char[body.length];
-      for (int i = 0; i < body.length; i++) {
-          int v      = (body[i] == NEWLINE_ESCAPE) ? 0x0A : (body[i] & 0xFF);
-          int scaled = Math.max(0, Math.min(63, v - LOWER_FOR_VALUE[v]));
-          int phred  = Math.max(0, Math.min(phredMax, INVERSE_SCALE[scaled]));
-          qual[i]    = (char)(phred + phredOffset);
-      }
-      return new String(qual);
-    }
-
-    private String reconstructHeader(String miniContent) {
-        if (structureTemplate != null && !structureTemplate.isEmpty()) {
-            String[] fields = miniContent.split("[:\\s/]+");
-            String result = structureTemplate;
-            for (int i = 0; i < fields.length; i++)
-                result = result.replace("{REPEATING_" + (i + 1) + "}", fields[i]);
-            result = result.replaceAll("\\{REPEATING_\\d+\\}", "");
-            return "@" + result.trim();
-        }
-        if (sraAccession != null && !miniContent.startsWith(sraAccession))
-            return "@" + sraAccession + "." + seqIndex + " " + miniContent;
-        return "@" + miniContent;
-    }
-
-    private void buildLookupTables(int gN, int gA, int gG, int gC, int gT) {
-        for (int v = 0; v < 256; v++) { BASE_FOR_VALUE[v] = 'N'; LOWER_FOR_VALUE[v] = 0; }
-        for (int v = gN; v < gA && v < 255; v++) { BASE_FOR_VALUE[v] = 'N'; LOWER_FOR_VALUE[v] = gN; }
-        for (int v = gA; v < gG && v < 255; v++) { BASE_FOR_VALUE[v] = 'A'; LOWER_FOR_VALUE[v] = gA; }
-        for (int v = gG; v < gC && v < 255; v++) { BASE_FOR_VALUE[v] = 'C'; LOWER_FOR_VALUE[v] = gG; }
-        for (int v = gC; v < gT && v < 255; v++) { BASE_FOR_VALUE[v] = 'G'; LOWER_FOR_VALUE[v] = gC; }
-        for (int v = gT; v < 255;      v++) { BASE_FOR_VALUE[v] = 'T'; LOWER_FOR_VALUE[v] = gT; }
-    }
-
-    private void buildInverseScaleTable() throws SequenceFormatException {
-        ScriptEngine engine = null;
-        try {
-            ScriptEngineManager manager = new ScriptEngineManager();
-            engine = manager.getEngineByName("JavaScript");
-        } catch (Exception ignored) {}
-
-        int[] scaledIntForQ = new int[phredMax + 1];
-        for (int q = 0; q <= phredMax; q++) {
-            double result = evalFormula(engine, qualScaleFormula, q);
-
-            if (Double.isNaN(result)) result = 1.0;
-            else if (Double.isInfinite(result)) result = result > 0 ? 63.0 : 1.0;
-            scaledIntForQ[q] = (int) result;
-        }
-
-        int[] inverse = new int[64];
-        Arrays.fill(inverse, -1);
-        for (int q = 0; q <= phredMax; q++) {
-            int s = scaledIntForQ[q];
-            if (s >= 0 && s <= 63) inverse[s] = q;
-        }
-
-        int[] valid = new int[64]; int nValid = 0;
-        for (int i = 0; i < 64; i++) if (inverse[i] != -1) valid[nValid++] = i;
-
-        if (nValid > 0) {
-            for (int i = 0; i < valid[0]; i++) inverse[i] = inverse[valid[0]];
-            for (int i = 0; i < nValid - 1; i++) {
-                int s = valid[i], e = valid[i+1];
-                int sv = inverse[s], ev = inverse[e], gap = e - s;
-                for (int j = 1; j < gap; j++)
-                    inverse[s+j] = (int) Math.round(sv + (double)(ev-sv)*j/gap);
-            }
-            for (int i = valid[nValid-1]+1; i < 64; i++) inverse[i] = inverse[valid[nValid-1]];
-        } else {
-            Arrays.fill(inverse, 0);
-        }
-
-        for (int s = 0; s < 64; s++) {
-            int v = inverse[s];
-            INVERSE_SCALE[s] = Math.max(0, Math.min(phredMax, v == -1 ? 0 : v));
-        }
-    }
-
-    private double evalFormula(ScriptEngine engine, String formula, double x) {
-        if (engine == null) {
-
-            if (formula.trim().equals("x")) return x;
-            double ln63 = Math.log(63.0);
-            return 1.0 + 62.0 * (Math.log(x + 1.0) / ln63);
-        }
-        try {
-            engine.put("x", x);
-
-            engine.eval("var ln=Math.log, log=Math.log, log10=Math.log10, exp=Math.exp, sqrt=Math.sqrt, abs=Math.abs;");
-            Object result = engine.eval(formula);
-            return ((Number) result).doubleValue();
-        } catch (Exception e) {
-
-            return x;
-        }
-    }
-
-    private static int indexOf(byte[] data, byte target, int from) {
-        for (int i = from; i < data.length; i++) if (data[i] == target) return i;
-        return -1;
-    }
-
-    private static int indexOfSeq(byte[] data, byte[] seq, int from) {
-        outer:
-        for (int i = from; i <= data.length - seq.length; i++) {
-            for (int j = 0; j < seq.length; j++) if (data[i+j] != seq[j]) continue outer;
-            return i;
-        }
-        return -1;
-    }
-
-    public void remove() {}
 }
-
-
+///END OF CHANGE///
